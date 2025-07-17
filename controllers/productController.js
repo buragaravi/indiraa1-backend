@@ -1099,7 +1099,7 @@ export const getUserOrderById = async (req, res) => {
     if (!order) return res.status(404).json({ message: 'Order not found.' });
     
     // Ensure user can only access their own orders
-    if (order.userId !== req.user.id) {
+    if (order.userId.toString() !== req.user.id.toString()) {
       return res.status(403).json({ message: 'Access denied. You can only view your own orders.' });
     }
     
