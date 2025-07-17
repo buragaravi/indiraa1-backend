@@ -195,6 +195,8 @@ const orderSchema = new mongoose.Schema({
     }
   },
   
+  deliveryRating: { type: Number, min: 1, max: 5 },
+  deliveryReview: { type: String },
   placedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

@@ -1,6 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import * as productController from '../controllers/productController.js';
+import { addOrderReview, getAverageOrderRating } from '../controllers/productController.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { authenticateAdminOrSubAdmin } from '../middleware/authUnified.js';
 
@@ -33,6 +34,9 @@ router.post('/orders/:id/cancel', authenticateUser, productController.cancelOrde
 router.get('/orders/:id', authenticateAdminOrSubAdmin, productController.getOrderById); // Admin/sub-admin endpoint for order details
 // Mark order as paid (admin/sub-admin)
 router.post('/orders/:id/mark-paid', authenticateAdminOrSubAdmin, productController.markOrderAsPaid);
+// Order review and average rating endpoints
+router.post('/orders/:id/review', authenticateUser, addOrderReview);
+router.get('/orders/ratings/average', authenticateAdminOrSubAdmin, getAverageOrderRating);
 
 // Wishlist
 router.get('/wishlist/me', authenticateUser, productController.getWishlistByUserId);

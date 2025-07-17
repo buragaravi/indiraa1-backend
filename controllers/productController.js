@@ -1086,7 +1086,11 @@ export const getOrderById = async (req, res) => {
         };
       }
     }
-    res.json({ order, user: userDetails });
+    // Ensure deliveryRating and deliveryReview are always present in response
+    const orderObj = order.toObject();
+    orderObj.deliveryRating = order.deliveryRating || null;
+    orderObj.deliveryReview = order.deliveryReview || null;
+    res.json({ order: orderObj, user: userDetails });
   } catch (_err) {
     res.status(500).json({ message: 'Failed to fetch order.' });
   }
@@ -1103,7 +1107,11 @@ export const getUserOrderById = async (req, res) => {
       return res.status(403).json({ message: 'Access denied. You can only view your own orders.' });
     }
     
-    res.json({ order });
+    // Ensure deliveryRating and deliveryReview are always present in response
+    const orderObj = order.toObject();
+    orderObj.deliveryRating = order.deliveryRating || null;
+    orderObj.deliveryReview = order.deliveryReview || null;
+    res.json({ order: orderObj });
   } catch (_err) {
     res.status(500).json({ message: 'Failed to fetch order.' });
   }
@@ -2207,5 +2215,66 @@ export const bulkCreateProducts = async (req, res) => {
       message: 'Bulk upload failed due to server error',
       error: error.message
     });
+  }
+};
+
+// ======================
+// DELIVERY RATINGS & REVIEWS ENDPOINTS
+// ======================
+
+// Add or update delivery rating/review for an order
+export const addOrderReview = async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { rating, review } = req.body;
+    const userId = req.user.id;
+
+    // Validate rating
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: 'Rating must be between 1 and 5.' });
+    }
+    if (!review || review.trim().length < 5) {
+      return res.status(400).json({ message: 'Review must be at least 5 characters.' });
+    }
+
+    // Find order
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found.' });
+    }
+
+    // Only allow the user who placed the order to review
+    if (order.userId.toString() !== userId.toString()) {
+      return res.status(403).json({ message: 'You can only review your own orders.' });
+    }
+
+    // Only allow review if order is delivered
+    if (order.status !== 'Delivered') {
+      return res.status(400).json({ message: 'You can only review delivered orders.' });
+    }
+
+    // Only one review per order
+    order.deliveryRating = rating;
+    order.deliveryReview = review.trim();
+    await order.save();
+
+    res.json({ success: true, message: 'Review added successfully.', deliveryRating: order.deliveryRating, deliveryReview: order.deliveryReview });
+  } catch (error) {
+    console.error('[ADD ORDER REVIEW] Error:', error);
+    res.status(500).json({ message: 'Failed to add review.' });
+  }
+};
+
+// Get average delivery rating and total reviews
+export const getAverageOrderRating = async (req, res) => {
+  try {
+    // Only consider orders with a rating
+    const ratedOrders = await Order.find({ deliveryRating: { $exists: true, $ne: null } });
+    const totalReviews = ratedOrders.length;
+    const avgRating = totalReviews > 0 ? (ratedOrders.reduce((sum, o) => sum + o.deliveryRating, 0) / totalReviews).toFixed(2) : null;
+    res.json({ averageRating: avgRating, totalReviews });
+  } catch (error) {
+    console.error('[GET AVERAGE ORDER RATING] Error:', error);
+    res.status(500).json({ message: 'Failed to fetch average rating.' });
   }
 };
