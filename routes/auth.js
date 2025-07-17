@@ -1,0 +1,538 @@
+import bcrypt from 'bcryptjs';
+import express from 'express';
+import jwt from 'jsonwebtoken';
+import { authenticateUser } from '../middleware/auth.js';
+import Admin from '../models/Admin.js';
+import User from '../models/User.js';
+import { processReferralRegistration } from '../controllers/referralController.js';
+import { sendPasswordResetOTP } from '../services/emailService.js';
+
+const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || 'RaviBuraga';
+
+// In-memory store for password reset OTPs (in production, use Redis or database)
+const passwordResetOTPs = new Map();
+
+// Clean expired OTPs every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, data] of passwordResetOTPs.entries()) {
+    if (now > data.expiresAt) {
+      passwordResetOTPs.delete(key);
+      console.log(`[FORGOT_PASSWORD] Cleaned expired OTP for: ${key}`);
+    }
+  }
+}, 5 * 60 * 1000);
+
+// Register
+router.post('/register', async (req, res) => {
+  try {
+    const { username, password, name, email, phone, referralCode } = req.body;
+    
+    if (!username || !password || !name || !email || !phone) {
+      return res.status(400).json({ message: 'All fields are required.' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: 'Please provide a valid email address.' });
+    }
+
+    // Check if username or email already exists
+    const existingUser = await User.findOne({ 
+      $or: [
+        { username },
+        { email: email.toLowerCase() }
+      ]
+    });
+    
+    if (existingUser) {
+      if (existingUser.username === username) {
+        return res.status(409).json({ message: 'Username already exists.' });
+      }
+      if (existingUser.email === email.toLowerCase()) {
+        return res.status(409).json({ message: 'Email already exists.' });
+      }
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user = await User.create({ 
+      username, 
+      password: hashed, 
+      name, 
+      email: email.toLowerCase(), 
+      phone 
+    });
+
+    // Generate referral code for new user
+    user.generateReferralCode();
+    await user.save();
+    
+    // Process referral bonus if referral code was provided
+    let referralResult = null;
+    if (referralCode && referralCode.trim()) {
+      try {
+        console.log(`[REGISTER] Starting referral processing for user ${user._id} with code: "${referralCode.trim()}"`);
+        referralResult = await processReferralRegistration(user._id, referralCode.trim());
+        console.log(`[REGISTER] Referral processing completed successfully:`, referralResult);
+      } catch (referralError) {
+        console.error('[REGISTER] Referral processing failed:', referralError);
+        console.error('[REGISTER] Referral error stack:', referralError.stack);
+        // Don't fail registration if referral processing fails
+        referralResult = { 
+          success: false, 
+          error: referralError.message,
+          message: 'Registration completed but referral bonus failed' 
+        };
+      }
+    } else {
+      console.log('[REGISTER] No referral code provided');
+    }
+    
+    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '10d' });
+
+    res.status(201).json({ 
+      token, 
+      user: { 
+        userId: user._id, 
+        username: user.username, 
+        name: user.name, 
+        email: user.email, 
+        phone: user.phone, 
+        addresses: user.addresses,
+        wallet: user.wallet,
+        referralCode: user.referralCode
+      },
+      referralResult // Include referral processing result if applicable
+    });
+  } catch (err) {
+    console.error('[REGISTER] Error:', err);
+    res.status(500).json({ message: 'Server error.' });
+  }
+});
+
+// Admin Registration
+router.post('/admin/register', async (req, res) => {
+  try {
+    const { username, password, name, email } = req.body;
+    if (!username || !password || !name || !email) {
+      return res.status(400).json({ message: 'All fields are required.' });
+    }
+    const existing = await Admin.findOne({ username });
+    if (existing) {
+      return res.status(409).json({ message: 'Admin username already exists.' });
+    }
+    const hashed = await bcrypt.hash(password, 10);
+    const admin = await Admin.create({ username, password: hashed, name, email });
+    const token = jwt.sign({ adminId: admin._id, isAdmin: true }, JWT_SECRET, { expiresIn: '10d' });
+    res.status(201).json({ token, admin: { adminId: admin._id, username: admin.username, name: admin.name, email: admin.email, isAdmin: true } });
+  } catch (_err) {
+    console.error('[ADMIN REGISTER] Error:', _err);
+    res.status(500).json({ message: 'Server error.' });
+  }
+});
+
+// Admin Login
+router.post('/admin/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const admin = await Admin.findOne({ username });
+    if (!admin) {
+      return res.status(401).json({ message: 'Invalid admin credentials.' });
+    }
+    const valid = await bcrypt.compare(password, admin.password);
+    if (!valid) {
+      return res.status(401).json({ message: 'Invalid admin credentials.' });
+    }
+    const token = jwt.sign({ adminId: admin._id, isAdmin: true }, JWT_SECRET, { expiresIn: '10d' });
+    res.json({ token, admin: { adminId: admin._id, username: admin.username, name: admin.name, email: admin.email, isAdmin: true } });
+  } catch (_err) {
+    console.error('[ADMIN LOGIN] Error:', _err);
+    res.status(500).json({ message: 'Server error.' });
+  }
+});
+
+//   PATCH NORMAL LOGIN TO FLAG ADMIN  
+// Removed ADMIN_USERNAME and ADMIN_PASSWORD check
+router.post('/login', async (req, res) => {
+  try {
+
+    const { username, password } = req.body;
+    if (!username || !password) {
+
+      return res.status(400).json({ message: 'Username and password required.' });
+    }
+    const user = await User.findOne({ username });
+    if (!user) {
+
+      return res.status(401).json({ message: 'Invalid credentials.' });
+    }
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) {
+
+      return res.status(401).json({ message: 'Invalid credentials.' });
+    }
+    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '10d' });
+
+    res.json({ 
+      token, 
+      user: { 
+        userId: user._id, 
+        username: user.username, 
+        name: user.name, 
+        email: user.email, 
+        phone: user.phone, 
+        addresses: user.addresses, 
+        isAdmin: false 
+      } 
+    });
+  } catch (err) {
+    console.error('[LOGIN] Error:', err);
+    res.status(500).json({ message: 'Server error.' });
+  }
+});
+  
+// Get current user (protected)
+router.get('/me', async (req, res) => {
+  try {
+
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) {
+
+      return res.status(401).json({ message: 'No token.' });
+    }
+    const token = auth.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.id).select('-password');
+    if (!user) {
+
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    res.json({ user: { userId: user._id, username: user.username, name: user.name, phone: user.phone, addresses: user.addresses, mail:user.email, email:user.email } });
+  } catch (err) {
+    console.error('[ME] Error:', err);
+    res.status(401).json({ message: 'Invalid or expired token.' });
+  }
+});
+
+// Update user profile (protected)
+router.put('/me', async (req, res) => {
+  try {
+
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) {
+
+      return res.status(401).json({ message: 'No token.' });
+    }
+    const token = auth.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { name, phone, addresses } = req.body;
+    const user = await User.findById(decoded.id);
+    if (!user) {
+
+      return res.status(404).json({ message: 'User not found.' });
+    }
+    if (name) user.name = name;
+    if (phone) user.phone = phone;
+    if (addresses) user.addresses = addresses;
+    await user.save();
+
+    res.json({ user: { userId: user._id, username: user.username, name: user.name, phone: user.phone, addresses: user.addresses } });
+  } catch (err) {
+    console.error('[UPDATE PROFILE] Error:', err);
+    res.status(401).json({ message: 'Invalid or expired token.' });
+  }
+});
+
+// Add user address function
+const addUserAddress = async (req, res) => {
+  try {
+    const { name, address, phone, isDefault = false } = req.body;
+    const userId = req.userId;
+
+    // Validation
+    if (!name || !address || !phone) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Name, address and phone are required' 
+      });
+    }
+
+    // Find user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // If this is set as default, unset all other defaults
+    if (isDefault) {
+      user.addresses.forEach(addr => addr.isDefault = false);
+    }
+
+    // Add new address
+    const newAddress = {
+      name,
+      address,
+      phone,
+      isDefault: isDefault || user.addresses.length === 0 // First address is default
+    };
+
+    user.addresses.push(newAddress);
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Address added successfully',
+      address: newAddress,
+      addresses: user.addresses
+    });
+
+  } catch (error) {
+    console.error('Add address error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to add address' 
+    });
+  }
+};
+
+// Add user address (protected)
+router.post('/address/add', authenticateUser, addUserAddress);
+
+// Forgot Password - Step 1: Request OTP
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { identifier } = req.body; // Can be email or username
+    
+    if (!identifier || !identifier.trim()) {
+      return res.status(400).json({ message: 'Email or username is required.' });
+    }
+
+    console.log(`[FORGOT_PASSWORD] Password reset requested for: ${identifier}`);
+
+    // Find user by email or username
+    const user = await User.findOne({
+      $or: [
+        { email: identifier.toLowerCase().trim() },
+        { username: identifier.trim() }
+      ]
+    });
+
+    if (!user) {
+      console.log(`[FORGOT_PASSWORD] User not found: ${identifier}`);
+      // Don't reveal if user exists or not for security
+      return res.json({ 
+        message: 'If this email or username exists, you will receive an OTP shortly.',
+        step: 'otp_sent'
+      });
+    }
+
+    console.log(`[FORGOT_PASSWORD] User found: ${user.email} (${user.username})`);
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + (10 * 60 * 1000); // 10 minutes
+
+    // Generate a session token for this password reset session
+    const sessionToken = jwt.sign(
+      { 
+        email: user.email.toLowerCase(),
+        purpose: 'password_reset_session',
+        timestamp: Date.now()
+      }, 
+      JWT_SECRET, 
+      { expiresIn: '15m' }
+    );
+
+    // Store OTP in memory using session token as key (use Redis in production)
+    passwordResetOTPs.set(sessionToken, {
+      otp,
+      userId: user._id.toString(),
+      email: user.email.toLowerCase(),
+      expiresAt,
+      attempts: 0,
+      maxAttempts: 5
+    });
+
+    console.log(`[FORGOT_PASSWORD] Generated OTP for ${user.email}: ${otp} (expires at ${new Date(expiresAt).toISOString()})`);
+    console.log(`[FORGOT_PASSWORD] Session token created: ${sessionToken}`);
+
+    // Send OTP via email
+    try {
+      const emailResult = await sendPasswordResetOTP(user.email, user.name, otp);
+      
+      if (emailResult.success) {
+        console.log(`[FORGOT_PASSWORD] OTP email sent successfully to: ${user.email}`);
+        res.json({ 
+          message: 'Password reset code sent to your email address.',
+          step: 'otp_sent',
+          sessionToken: sessionToken,
+          maskedEmail: user.email.replace(/(.{2}).*(@.*)/, '$1***$2') // Just for display
+        });
+      } else {
+        console.error(`[FORGOT_PASSWORD] Failed to send OTP email:`, emailResult.error);
+        passwordResetOTPs.delete(sessionToken); // Clean up on email failure
+        res.status(500).json({ message: 'Failed to send reset code. Please try again.' });
+      }
+    } catch (emailError) {
+      console.error(`[FORGOT_PASSWORD] Email sending error:`, emailError);
+      passwordResetOTPs.delete(sessionToken);
+      res.status(500).json({ message: 'Failed to send reset code. Please try again.' });
+    }
+
+  } catch (error) {
+    console.error('[FORGOT_PASSWORD] Error in forgot password:', error);
+    res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+});
+
+// Forgot Password - Step 2: Verify OTP
+router.post('/verify-reset-otp', async (req, res) => {
+  try {
+    const { sessionToken, otp } = req.body;
+    
+    if (!sessionToken || !otp) {
+      return res.status(400).json({ message: 'Session token and OTP are required.' });
+    }
+
+    console.log(`[VERIFY_OTP] OTP verification attempt with session token`);
+
+    // Verify session token
+    let sessionData;
+    try {
+      sessionData = jwt.verify(sessionToken, JWT_SECRET);
+      if (sessionData.purpose !== 'password_reset_session') {
+        throw new Error('Invalid session token purpose');
+      }
+    } catch (jwtError) {
+      console.log(`[VERIFY_OTP] Invalid session token:`, jwtError.message);
+      return res.status(400).json({ message: 'Invalid or expired session. Please start over.' });
+    }
+
+    const storedData = passwordResetOTPs.get(sessionToken);
+
+    if (!storedData) {
+      console.log(`[VERIFY_OTP] No OTP found for session token`);
+      return res.status(400).json({ message: 'Invalid or expired OTP. Please request a new one.' });
+    }
+
+    console.log(`[VERIFY_OTP] Found OTP data for email: ${storedData.email}`);
+
+    // Check if OTP is expired
+    if (Date.now() > storedData.expiresAt) {
+      console.log(`[VERIFY_OTP] Expired OTP for: ${storedData.email}`);
+      passwordResetOTPs.delete(sessionToken);
+      return res.status(400).json({ message: 'OTP has expired. Please request a new one.' });
+    }
+
+    // Check attempt limit
+    if (storedData.attempts >= storedData.maxAttempts) {
+      console.log(`[VERIFY_OTP] Max attempts exceeded for: ${storedData.email}`);
+      passwordResetOTPs.delete(sessionToken);
+      return res.status(400).json({ message: 'Too many failed attempts. Please request a new OTP.' });
+    }
+
+    // Verify OTP
+    if (storedData.otp !== otp.toString()) {
+      storedData.attempts += 1;
+      console.log(`[VERIFY_OTP] Invalid OTP for ${storedData.email}. Attempt ${storedData.attempts}/${storedData.maxAttempts}`);
+      return res.status(400).json({ 
+        message: `Invalid OTP. ${storedData.maxAttempts - storedData.attempts} attempts remaining.` 
+      });
+    }
+
+    console.log(`[VERIFY_OTP] OTP verified successfully for: ${storedData.email}`);
+
+    // Generate temporary reset token (valid for 15 minutes)
+    const resetToken = jwt.sign(
+      { 
+        userId: storedData.userId, 
+        email: storedData.email,
+        purpose: 'password_reset'
+      }, 
+      JWT_SECRET, 
+      { expiresIn: '15m' }
+    );
+
+    // Clean up OTP
+    passwordResetOTPs.delete(sessionToken);
+
+    res.json({ 
+      message: 'OTP verified successfully. You can now reset your password.',
+      step: 'reset_password',
+      resetToken
+    });
+
+  } catch (error) {
+    console.error('[VERIFY_OTP] Error:', error);
+    res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+});
+
+// Forgot Password - Step 3: Reset Password
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { resetToken, newPassword, confirmPassword } = req.body;
+    
+    if (!resetToken || !newPassword || !confirmPassword) {
+      return res.status(400).json({ message: 'All fields are required.' });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ message: 'Passwords do not match.' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters long.' });
+    }
+
+    console.log(`[RESET_PASSWORD] Password reset attempt with token`);
+
+    // Verify reset token
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, JWT_SECRET);
+      
+      if (decoded.purpose !== 'password_reset') {
+        throw new Error('Invalid token purpose');
+      }
+    } catch (jwtError) {
+      console.log(`[RESET_PASSWORD] Invalid or expired reset token:`, jwtError.message);
+      return res.status(400).json({ message: 'Invalid or expired reset token. Please start the process again.' });
+    }
+
+    // Find user
+    const user = await User.findById(decoded.userId);
+    if (!user) {
+      console.log(`[RESET_PASSWORD] User not found for ID: ${decoded.userId}`);
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    console.log(`[RESET_PASSWORD] Resetting password for user: ${user.email}`);
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // Update user password
+    user.password = hashedPassword;
+    await user.save();
+
+    console.log(`[RESET_PASSWORD] Password updated successfully for: ${user.email}`);
+
+    res.json({ 
+      message: 'Password reset successfully. You can now login with your new password.',
+      step: 'completed'
+    });
+
+  } catch (error) {
+    console.error('[RESET_PASSWORD] Error:', error);
+    res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+});
+
+export default router;
