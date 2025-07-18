@@ -530,35 +530,77 @@ export const moveAllocatedToUsed = async (orderId) => {
             
             // Find the product in the batch group
             const batchProduct = batchGroup.products.find(p => {
-              const productMatch = p.productId.toString() === item.productId.toString();
-              const variantMatch = (p.variantId === item.variantId) || 
-                                 (p.variantId == null && item.variantId == null);
-              return productMatch && variantMatch;
+              return p.productId.toString() === item.productId.toString();
             });
             
             if (batchProduct) {
-              console.log(`[BATCH GROUP] Found batch product, current quantities:`, {
+              console.log(`[BATCH GROUP] Found batch product:`, {
                 productId: batchProduct.productId,
-                variantId: batchProduct.variantId,
-                quantity: batchProduct.quantity,
-                availableQuantity: batchProduct.availableQuantity,
-                allocatedQuantity: batchProduct.allocatedQuantity,
-                usedQuantity: batchProduct.usedQuantity,
-                quantityToMove: item.quantity
+                hasVariants: batchProduct.variants && batchProduct.variants.length > 0,
+                itemVariantId: item.variantId
               });
               
-              // Move quantity from allocated to used
-              const quantityToMove = item.quantity;
-              batchProduct.allocatedQuantity = Math.max(0, batchProduct.allocatedQuantity - quantityToMove);
-              batchProduct.usedQuantity = (batchProduct.usedQuantity || 0) + quantityToMove;
-              
-              console.log(`[BATCH GROUP] Updated quantities:`, {
-                newAllocated: batchProduct.allocatedQuantity,
-                newUsed: batchProduct.usedQuantity,
-                newAvailable: batchProduct.availableQuantity
-              });
-              
-              hasUpdates = true;
+              // Check if this is a variant product
+              if (item.variantId && batchProduct.variants && batchProduct.variants.length > 0) {
+                // Handle variant products
+                const variant = batchProduct.variants.find(v => v.variantId === item.variantId);
+                
+                if (variant) {
+                  console.log(`[BATCH GROUP] Found variant, current quantities:`, {
+                    variantId: variant.variantId,
+                    quantity: variant.quantity,
+                    availableQuantity: variant.availableQuantity,
+                    allocatedQuantity: variant.allocatedQuantity,
+                    usedQuantity: variant.usedQuantity,
+                    quantityToMove: item.quantity
+                  });
+                  
+                  // Move quantity from allocated to used for variant
+                  const quantityToMove = item.quantity;
+                  variant.allocatedQuantity = Math.max(0, variant.allocatedQuantity - quantityToMove);
+                  variant.usedQuantity = (variant.usedQuantity || 0) + quantityToMove;
+                  
+                  console.log(`[BATCH GROUP] Updated variant quantities:`, {
+                    newAllocated: variant.allocatedQuantity,
+                    newUsed: variant.usedQuantity,
+                    newAvailable: variant.availableQuantity
+                  });
+                  
+                  hasUpdates = true;
+                } else {
+                  console.error(`[BATCH GROUP] Variant not found in batch product:`, {
+                    productId: item.productId,
+                    variantId: item.variantId,
+                    batchGroupId: batchGroup._id,
+                    availableVariants: batchProduct.variants.map(v => v.variantId)
+                  });
+                  
+                  errors.push(`Variant ${item.variantId} not found in batch group ${batchGroup._id} for product ${item.productId}`);
+                }
+              } else {
+                // Handle non-variant products
+                console.log(`[BATCH GROUP] Found non-variant product, current quantities:`, {
+                  productId: batchProduct.productId,
+                  quantity: batchProduct.quantity,
+                  availableQuantity: batchProduct.availableQuantity,
+                  allocatedQuantity: batchProduct.allocatedQuantity,
+                  usedQuantity: batchProduct.usedQuantity,
+                  quantityToMove: item.quantity
+                });
+                
+                // Move quantity from allocated to used for main product
+                const quantityToMove = item.quantity;
+                batchProduct.allocatedQuantity = Math.max(0, batchProduct.allocatedQuantity - quantityToMove);
+                batchProduct.usedQuantity = (batchProduct.usedQuantity || 0) + quantityToMove;
+                
+                console.log(`[BATCH GROUP] Updated product quantities:`, {
+                  newAllocated: batchProduct.allocatedQuantity,
+                  newUsed: batchProduct.usedQuantity,
+                  newAvailable: batchProduct.availableQuantity
+                });
+                
+                hasUpdates = true;
+              }
             } else {
               console.error(`[BATCH GROUP] Product not found in batch group:`, {
                 productId: item.productId,
