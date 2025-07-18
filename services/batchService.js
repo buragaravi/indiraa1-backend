@@ -1,4 +1,5 @@
 import Batch from '../models/Batch.js';
+import mongoose from 'mongoose';
 
 // Batch service functions for product integration
 
@@ -114,7 +115,10 @@ export const createOrMergeBatch = async (productId, variantId, batchData, create
 // Allocate batches for order using FEFO
 export const allocateBatchesForOrder = async (productId, variantId, quantityNeeded, orderId) => {
   try {
-    const availableBatches = await Batch.getBatchesForFEFO(productId, variantId, quantityNeeded);
+    // Convert productId to ObjectId if it's a string
+    const productObjectId = typeof productId === 'string' ? new mongoose.Types.ObjectId(productId) : productId;
+    
+    const availableBatches = await Batch.getBatchesForFEFO(productObjectId, variantId, quantityNeeded);
     
     const allocations = [];
     let remainingQuantity = quantityNeeded;
@@ -163,10 +167,15 @@ export const allocateBatchesForOrder = async (productId, variantId, quantityNeed
 // Calculate total available stock from batches
 export const calculateBatchStock = async (productId, variantId = null) => {
   try {
+    // Convert productId to ObjectId if it's a string
+    const productObjectId = typeof productId === 'string' ? new mongoose.Types.ObjectId(productId) : productId;
+    
+    console.log(`[BATCH SERVICE] Calculating stock for product ${productObjectId}, variant ${variantId}`);
+    
     const result = await Batch.aggregate([
       {
         $match: {
-          productId: productId,
+          productId: productObjectId,
           variantId: variantId,
           status: 'Active'
         }
@@ -182,12 +191,25 @@ export const calculateBatchStock = async (productId, variantId = null) => {
       }
     ]);
 
-    return result[0] || {
+    const stockResult = result[0] || {
       totalAvailable: 0,
       totalAllocated: 0,
       totalQuantity: 0,
       batchCount: 0
     };
+    
+    console.log(`[BATCH SERVICE] Stock calculation result:`, stockResult);
+    
+    // Also check if there are any batches at all
+    const batchCount = await Batch.countDocuments({
+      productId: productObjectId,
+      variantId: variantId,
+      status: 'Active'
+    });
+    
+    console.log(`[BATCH SERVICE] Total active batches found: ${batchCount}`);
+    
+    return stockResult;
   } catch (error) {
     console.error('[BATCH SERVICE] Error calculating batch stock:', error);
     throw error;
@@ -243,14 +265,17 @@ export const updateExpiredBatches = async () => {
 // Deallocate batch quantities (for cancelled orders)
 export const deallocateBatchQuantities = async (orderId) => {
   try {
+    // Convert orderId to ObjectId if it's a string
+    const orderObjectId = typeof orderId === 'string' ? new mongoose.Types.ObjectId(orderId) : orderId;
+    
     const batches = await Batch.find({
-      'orderAllocations.orderId': orderId,
+      'orderAllocations.orderId': orderObjectId,
       'orderAllocations.status': 'Allocated'
     });
 
     for (const batch of batches) {
       const allocation = batch.orderAllocations.find(
-        alloc => alloc.orderId.toString() === orderId.toString() && alloc.status === 'Allocated'
+        alloc => alloc.orderId.toString() === orderObjectId.toString() && alloc.status === 'Allocated'
       );
 
       if (allocation) {

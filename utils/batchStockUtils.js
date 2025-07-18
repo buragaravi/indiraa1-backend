@@ -1,14 +1,24 @@
 import batchService from '../services/batchService.js';
+import batchGroupStockService from '../services/batchGroupStockService.js';
 import Product from '../models/Product.js';
 import Batch from '../models/Batch.js';
+import mongoose from 'mongoose';
 
 
 // Update product stock from batch quantities
 export const updateProductStockFromBatches = async (productId, variantId = null) => {
   try {
-    const batchStock = await batchService.calculateBatchStock(productId, variantId);
+    // Convert productId to ObjectId if it's a string
+    const productObjectId = typeof productId === 'string' ? new mongoose.Types.ObjectId(productId) : productId;
     
-    const product = await Product.findById(productId);
+    console.log(`[BATCH SYNC] Updating product stock for product ${productObjectId}, variant ${variantId}`);
+    
+    // Use batch group stock calculation instead of individual batches
+    const batchStock = await batchGroupStockService.calculateBatchGroupStock(productObjectId, variantId);
+    
+    console.log(`[BATCH SYNC] Batch group stock result:`, batchStock);
+    
+    const product = await Product.findById(productObjectId);
     if (!product) {
       throw new Error('Product not found');
     }
@@ -71,14 +81,17 @@ export const syncAllProductStocks = async () => {
 // Check if sufficient stock exists for an order item
 export const checkStockAvailability = async (productId, variantId, quantityNeeded) => {
   try {
-    const batchStock = await batchService.calculateBatchStock(productId, variantId);
+    // Convert productId to ObjectId if it's a string
+    const productObjectId = typeof productId === 'string' ? new mongoose.Types.ObjectId(productId) : productId;
     
-    return {
-      available: batchStock.totalAvailable >= quantityNeeded,
-      availableQuantity: batchStock.totalAvailable,
-      requestedQuantity: quantityNeeded,
-      shortfall: Math.max(0, quantityNeeded - batchStock.totalAvailable)
-    };
+    console.log(`[STOCK CHECK] Checking availability for product ${productObjectId}, variant ${variantId}, quantity ${quantityNeeded}`);
+    
+    // Use batch group stock check instead of individual batch check
+    const result = await batchGroupStockService.checkBatchGroupStockAvailability(productObjectId, variantId, quantityNeeded);
+    
+    console.log(`[STOCK CHECK] Final availability result:`, result);
+    
+    return result;
   } catch (error) {
     console.error('[STOCK CHECK] Error checking availability:', error);
     return {
@@ -91,56 +104,30 @@ export const checkStockAvailability = async (productId, variantId, quantityNeede
   }
 };
 
-// Allocate stock for order using FEFO
+// Allocate stock for order using FEFO from batch groups
 export const allocateStockForOrder = async (orderItems, orderId) => {
   try {
-    const allocations = [];
-    const errors = [];
+    console.log(`[STOCK ALLOCATION] Starting batch group allocation for order ${orderId}`);
+    console.log(`[STOCK ALLOCATION] Order items:`, orderItems);
     
-    for (const item of orderItems) {
-      try {
-        const result = await batchService.allocateBatchesForOrder(
-          item.productId,
-          item.variantId,
-          item.quantity,
-          orderId
-        );
-        
-        if (result.fullyAllocated) {
-          allocations.push({
-            productId: item.productId,
-            variantId: item.variantId,
-            quantity: item.quantity,
-            allocations: result.allocations,
-            status: 'Fully Allocated'
-          });
-          
-          // Update product stock
+    // Use batch group allocation instead of individual batch allocation
+    const result = await batchGroupStockService.allocateBatchGroupStockForOrder(orderItems, orderId);
+    
+    console.log(`[STOCK ALLOCATION] Batch group allocation result:`, result);
+    
+    // Update product stocks after allocation
+    if (result.success) {
+      for (const item of orderItems) {
+        try {
+          console.log(`[STOCK ALLOCATION] Updating product stock for ${item.productId}, variant ${item.variantId}`);
           await updateProductStockFromBatches(item.productId, item.variantId);
-        } else {
-          errors.push({
-            productId: item.productId,
-            variantId: item.variantId,
-            requestedQuantity: item.quantity,
-            shortfall: result.shortfall,
-            message: `Insufficient stock. Short by ${result.shortfall} units.`
-          });
+        } catch (updateError) {
+          console.error(`[STOCK ALLOCATION] Failed to update product stock for ${item.productId}:`, updateError);
         }
-      } catch (allocationError) {
-        console.error('[STOCK ALLOCATION] Error allocating for item:', item, allocationError);
-        errors.push({
-          productId: item.productId,
-          variantId: item.variantId,
-          message: allocationError.message
-        });
       }
     }
     
-    return {
-      success: errors.length === 0,
-      allocations,
-      errors
-    };
+    return result;
   } catch (error) {
     console.error('[STOCK ALLOCATION] Error in order allocation:', error);
     throw error;
@@ -150,11 +137,14 @@ export const allocateStockForOrder = async (orderItems, orderId) => {
 // Deallocate stock for cancelled/returned orders
 export const deallocateStockForOrder = async (orderId) => {
   try {
-    await batchService.deallocateBatchQuantities(orderId);
+    // Convert orderId to ObjectId if it's a string
+    const orderObjectId = typeof orderId === 'string' ? new mongoose.Types.ObjectId(orderId) : orderId;
+    
+    await batchService.deallocateBatchQuantities(orderObjectId);
     
     // Find affected products and update their stock
     const batches = await Batch.find({
-      'orderAllocations.orderId': orderId
+      'orderAllocations.orderId': orderObjectId
     }).populate('productId');
     
     const affectedProducts = new Set();

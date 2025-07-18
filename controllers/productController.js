@@ -680,6 +680,9 @@ export const getReviews = async (req, res) => {
 // Create order
 export const createOrder = async (req, res) => {
   try {
+    console.log('=== CREATE ORDER STARTED ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    
     const { 
       items, 
       shipping, 
@@ -693,8 +696,10 @@ export const createOrder = async (req, res) => {
     } = req.body;
     
     console.log('[CREATE ORDER] Received coin discount data:', coinDiscount);
+    console.log('[CREATE ORDER] Items to process:', items.length);
     
     const userId = req.user.id;
+    console.log('[CREATE ORDER] User ID:', userId);
       // Validate required fields
     if (!items || !items.length) {
       return res.status(400).json({ message: 'Items are required' });
@@ -756,13 +761,17 @@ export const createOrder = async (req, res) => {
 
         if (item.hasVariant && item.variantId) {
           // Check batch availability for variant
+          console.log(`[CREATE ORDER] Checking variant stock for product ${item.id}, variant ${item.variantId}, quantity ${item.qty}`);
           const stockCheck = await batchStockUtils.checkStockAvailability(
             item.id, 
             item.variantId, 
             item.qty
           );
           
+          console.log(`[CREATE ORDER] Variant stock check result:`, stockCheck);
+          
           if (!stockCheck.available) {
+            console.log(`[CREATE ORDER] Insufficient variant stock - Available: ${stockCheck.availableQuantity}, Required: ${item.qty}`);
             return res.status(400).json({ 
               message: `Insufficient batch stock for ${item.name} - ${item.variantName}. Available: ${stockCheck.availableQuantity}, Required: ${item.qty}` 
             });
@@ -776,13 +785,17 @@ export const createOrder = async (req, res) => {
           });
         } else {
           // Check batch availability for main product
+          console.log(`[CREATE ORDER] Checking product stock for product ${item.id}, quantity ${item.qty}`);
           const stockCheck = await batchStockUtils.checkStockAvailability(
             item.id, 
             null, 
             item.qty
           );
           
+          console.log(`[CREATE ORDER] Product stock check result:`, stockCheck);
+          
           if (!stockCheck.available) {
+            console.log(`[CREATE ORDER] Insufficient product stock - Available: ${stockCheck.availableQuantity}, Required: ${item.qty}`);
             return res.status(400).json({ 
               message: `Insufficient batch stock for ${item.name}. Available: ${stockCheck.availableQuantity}, Required: ${item.qty}` 
             });

@@ -200,10 +200,13 @@ batchSchema.statics.generateBatchNumber = async function(productId, variantId = 
 
 // Find compatible batch for merging
 batchSchema.statics.findCompatibleBatch = async function(productId, variantId, batchData) {
+  // Convert productId to ObjectId if it's a string
+  const productObjectId = typeof productId === 'string' ? new mongoose.Types.ObjectId(productId) : productId;
+  
   const { manufacturingDate, expiryDate, bestBeforeDate, supplierInfo } = batchData;
   
   return this.findOne({
-    productId,
+    productId: productObjectId,
     variantId,
     status: 'Active',
     manufacturingDate,
@@ -216,8 +219,11 @@ batchSchema.statics.findCompatibleBatch = async function(productId, variantId, b
 
 // Get batches for FEFO allocation
 batchSchema.statics.getBatchesForFEFO = async function(productId, variantId, quantityNeeded) {
+  // Convert productId to ObjectId if it's a string
+  const productObjectId = typeof productId === 'string' ? new mongoose.Types.ObjectId(productId) : productId;
+  
   return this.find({
-    productId,
+    productId: productObjectId,
     variantId,
     status: 'Active',
     availableQuantity: { $gt: 0 }
