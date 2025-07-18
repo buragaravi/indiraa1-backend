@@ -36,6 +36,8 @@ import deliveryAuthRoutes from './routes/deliveryAuth.js';
 import deliveryRoutes from './routes/delivery.js';
 import adminDeliveryRoutes from './routes/adminDelivery.js';
 import subAdminRoutes from './routes/subAdmin.js';
+import batchRoutes from './routes/batch.js';
+import { initializeBatchScheduler } from './utils/batchScheduler.js';
 
 const app = express();
 
@@ -54,6 +56,7 @@ app.use('/api/delivery-auth', deliveryAuthRoutes);
 app.use('/api/delivery', deliveryRoutes);
 app.use('/api/admin/delivery', adminDeliveryRoutes);
 app.use('/api/sub-admin', subAdminRoutes);
+app.use('/api/batches', batchRoutes);
 
 // Add endpoint to receive and store user push tokens
 app.post('/api/users/push-token', authenticateUser, async (req, res) => {
@@ -243,29 +246,29 @@ app.post('/api/test/visit-rewards', async (req, res) => {
   }
 });
 
-// Schedule offer notifications every 30 minutes
-cron.schedule('*/30 * * * *', async () => {
-  try {
-    const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-    if (users.length > 0) {
-      await notifications.notifyOffers(users);
-      console.log(`[CRON] Sent offer notifications to ${users.length} users.`);
-    }
-  } catch (err) {
-    console.error('[CRON] Failed to send offer notifications:', err);
-  }
-});
+// Schedule offer notifications every 30 minutes - DISABLED
+// cron.schedule('*/30 * * * *', async () => {
+//   try {
+//     const users = await User.find({ pushToken: { $exists: true, $ne: null } });
+//     if (users.length > 0) {
+//       await notifications.notifyOffers(users);
+//       console.log(`[CRON] Sent offer notifications to ${users.length} users.`);
+//     }
+//   } catch (err) {
+//     console.error('[CRON] Failed to send offer notifications:', err);
+//   }
+// });
 
-// Schedule banner cleanup every hour
-cron.schedule('0 * * * *', async () => {
-  try {
-    const Banner = (await import('./models/Banner.js')).default;
-    await Banner.handleExpiredBanners();
-    console.log('[CRON] Banner cleanup completed');
-  } catch (err) {
-    console.error('[CRON] Failed to cleanup expired banners:', err);
-  }
-});
+// Schedule banner cleanup every hour - DISABLED  
+// cron.schedule('0 * * * *', async () => {
+//   try {
+//     const Banner = (await import('./models/Banner.js')).default;
+//     await Banner.handleExpiredBanners();
+//     console.log('[CRON] Banner cleanup completed');
+//   } catch (err) {
+//     console.error('[CRON] Failed to cleanup expired banners:', err);
+//   }
+// });
 
 // Health check endpoint for PWA connectivity testing
 app.head('/api/health', (req, res) => {
@@ -629,6 +632,12 @@ const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => {
-    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      
+      // Initialize batch management scheduled jobs - DISABLED FOR NOW
+      // initializeBatchScheduler();
+      console.log('[INFO] Batch scheduler disabled - no automatic stock updates');
+    });
   })
   .catch(err => console.error('MongoDB connection error:', err));

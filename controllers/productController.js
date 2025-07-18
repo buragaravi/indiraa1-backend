@@ -31,6 +31,8 @@ import {
   calculateLockoutExpiry,
   getRemainingLockoutTime
 } from '../utils/otpUtils.js';
+import batchStockUtils from '../utils/batchStockUtils.js';
+import batchService from '../services/batchService.js';
 
 const s3 = new AWS.S3({
   accessKeyId: process.env.AWS_ACCESS_KEY,
@@ -118,7 +120,17 @@ function getVariantPrice(product, variantId) {
 // Create product
 export const createProduct = async (req, res) => {
   try {
-    const { name, description, price, category, stock, hasVariants, variants } = req.body;
+    const { 
+      name, 
+      description, 
+      price, 
+      category, 
+      stock, 
+      hasVariants, 
+      variants,
+      // Batch related fields (always processed now)
+      batchData
+    } = req.body;
     
     // Validate required fields
     if (!name || name.trim().length === 0) {
@@ -245,10 +257,55 @@ export const createProduct = async (req, res) => {
     await product.save();
     
     console.log(`[CREATE PRODUCT] Successfully created product ${product._id}`);
+    
+    // Create batch group entry for this product using new system
+    try {
+      let parsedBatchData = {};
+      
+      // Parse batch data if provided, otherwise use defaults
+      if (batchData) {
+        parsedBatchData = typeof batchData === 'string' ? JSON.parse(batchData) : batchData;
+      }
+      
+      // Set default dates if not provided
+      const defaultManufacturingDate = parsedBatchData.manufacturingDate || new Date();
+      const defaultSupplierInfo = {
+        supplierName: parsedBatchData.supplierName || 'Indiraa Foods Pvt Ltd',
+        purchaseOrderNumber: parsedBatchData.purchaseOrderNumber || '',
+        receivedDate: parsedBatchData.receivedDate || new Date(),
+        contactInfo: parsedBatchData.contactInfo || 'info@indiraafoods.com'
+      };
+      
+      const batchGroupService = await import('../services/batchGroupService.js');
+      
+      const productForBatching = {
+        productId: product._id,
+        hasVariants: product.hasVariants,
+        variants: product.variants,
+        stock: product.stock,
+        manufacturingDate: parsedBatchData.manufacturingDate,
+        expiryDate: parsedBatchData.expiryDate,
+        bestBeforeDate: parsedBatchData.bestBeforeDate,
+        supplierInfo: defaultSupplierInfo,
+        location: parsedBatchData.location || 'Main Warehouse'
+      };
+      
+      const batchResult = await batchGroupService.addProductToBatch(
+        productForBatching,
+        req.user.id || req.user._id
+      );
+      
+      console.log(`[CREATE PRODUCT] ${batchResult.action === 'ADDED_TO_EXISTING' ? 'Added to existing' : 'Created new'} batch group: ${batchResult.batchGroup.batchGroupNumber}`);
+      
+    } catch (batchError) {
+      console.error('[CREATE PRODUCT] Error creating batch group:', batchError);
+      // Don't fail product creation if batch creation fails
+    }
+    
     res.status(201).json({ 
       success: true,
       product: addIdField(product),
-      message: 'Product created successfully'
+      message: `Product created successfully and added to batch group`
     });
   } catch (error) {
     console.error('[CREATE PRODUCT] Unexpected error:', error);
@@ -454,10 +511,99 @@ export const updateProduct = async (req, res) => {
 // Delete product
 export const deleteProduct = async (req, res) => {
   try {
-    await Product.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Product deleted.' });
-  } catch (_err) {
-    res.status(500).json({ message: 'Failed to delete product.' });
+    const productId = req.params.id;
+    console.log(`[DELETE PRODUCT] Attempting to delete product: ${productId}`);
+
+    // Check if product exists
+    const product = await Product.findById(productId);
+    if (!product) {
+      console.log(`[DELETE PRODUCT] Product not found: ${productId}`);
+      return res.status(404).json({ message: 'Product not found.' });
+    }
+
+    console.log(`[DELETE PRODUCT] Found product: ${product.name}`);
+
+    // Delete from old Batch model (legacy cleanup)
+    try {
+      const Batch = (await import('../models/Batch.js')).default;
+      const deletedBatches = await Batch.deleteMany({ productId: productId });
+      console.log(`[DELETE PRODUCT] Deleted ${deletedBatches.deletedCount} legacy batches`);
+    } catch (batchError) {
+      console.log(`[DELETE PRODUCT] Warning: Could not delete legacy batches - ${batchError.message}`);
+    }
+
+    // Remove product from BatchGroups (new system)
+    try {
+      const BatchGroup = (await import('../models/BatchGroup.js')).default;
+      
+      // Find all batch groups containing this product
+      const batchGroups = await BatchGroup.find({ 'products.productId': productId });
+      
+      for (const batchGroup of batchGroups) {
+        // Remove the product from the batch group
+        batchGroup.products = batchGroup.products.filter(
+          p => p.productId.toString() !== productId.toString()
+        );
+        
+        // If batch group has no products left, delete it
+        if (batchGroup.products.length === 0) {
+          await BatchGroup.findByIdAndDelete(batchGroup._id);
+          console.log(`[DELETE PRODUCT] Deleted empty batch group: ${batchGroup.batchGroupNumber}`);
+        } else {
+          // Save the updated batch group
+          await batchGroup.save();
+          console.log(`[DELETE PRODUCT] Removed product from batch group: ${batchGroup.batchGroupNumber}`);
+        }
+      }
+      
+      console.log(`[DELETE PRODUCT] Processed ${batchGroups.length} batch groups`);
+    } catch (batchGroupError) {
+      console.log(`[DELETE PRODUCT] Warning: Could not update batch groups - ${batchGroupError.message}`);
+    }
+
+    // Remove product from user wishlists
+    try {
+      const User = (await import('../models/User.js')).default;
+      const updatedUsers = await User.updateMany(
+        { wishlist: productId },
+        { $pull: { wishlist: productId } }
+      );
+      console.log(`[DELETE PRODUCT] Removed from ${updatedUsers.modifiedCount} user wishlists`);
+    } catch (wishlistError) {
+      console.log(`[DELETE PRODUCT] Warning: Could not update wishlists - ${wishlistError.message}`);
+    }
+
+    // Remove product from user carts
+    try {
+      const User = (await import('../models/User.js')).default;
+      const updatedCarts = await User.updateMany(
+        { 'cart.product': productId },
+        { $pull: { cart: { product: productId } } }
+      );
+      console.log(`[DELETE PRODUCT] Removed from ${updatedCarts.modifiedCount} user carts`);
+    } catch (cartError) {
+      console.log(`[DELETE PRODUCT] Warning: Could not update carts - ${cartError.message}`);
+    }
+
+    // Delete the product
+    const deletedProduct = await Product.findByIdAndDelete(productId);
+    if (!deletedProduct) {
+      console.log(`[DELETE PRODUCT] Failed to delete product: ${productId}`);
+      return res.status(500).json({ message: 'Failed to delete product from database.' });
+    }
+
+    console.log(`[DELETE PRODUCT] Successfully deleted product: ${product.name} (${productId})`);
+    res.json({ 
+      message: 'Product deleted successfully.',
+      productName: product.name,
+      deletedBatches: true
+    });
+  } catch (error) {
+    console.error(`[DELETE PRODUCT] Error deleting product:`, error);
+    res.status(500).json({ 
+      message: 'Failed to delete product.',
+      error: error.message 
+    });
   }
 };
 
@@ -558,8 +704,10 @@ export const createOrder = async (req, res) => {
     }
     if (!totalAmount) {
       return res.status(400).json({ message: 'Total amount is required' });
-    }    // Validate stock availability and prepare stock updates
+    }    // Validate stock availability and prepare stock updates with batch allocation
     const stockUpdates = [];
+    const batchOrderItems = []; // Items for batch allocation
+    
     for (const item of items) {
       if (item.type === 'combo') {
         // Handle combo pack stock validation
@@ -585,60 +733,64 @@ export const createOrder = async (req, res) => {
           comboPack: comboPack
         });
 
-        // Also track individual product stock updates within the combo
+        // Also prepare individual product batch allocations within the combo
         for (const comboProduct of comboPack.products) {
           const product = await Product.findById(comboProduct.productId);
           if (product) {
-            if (comboProduct.variantId) {
-              stockUpdates.push({
-                productId: comboProduct.productId,
-                variantId: comboProduct.variantId,
-                quantity: comboProduct.quantity * item.qty, // Multiply by combo quantity
-                type: 'variant'
-              });
-            } else {
-              stockUpdates.push({
-                productId: comboProduct.productId,
-                quantity: comboProduct.quantity * item.qty, // Multiply by combo quantity
-                type: 'product'
-              });
-            }
+            batchOrderItems.push({
+              productId: comboProduct.productId,
+              variantId: comboProduct.variantId || null,
+              quantity: comboProduct.quantity * item.qty, // Multiply by combo quantity
+              type: 'combo-item',
+              parentComboId: item.id
+            });
           }
         }
 
       } else {
-        // Handle regular product stock validation
+        // Handle regular product stock validation with batch checking
         const product = await Product.findById(item.id);
         if (!product) {
           return res.status(400).json({ message: `Product ${item.name} not found` });
         }
 
         if (item.hasVariant && item.variantId) {
-          // Handle variant stock
-          const variant = product.variants.find(v => v.id === item.variantId);
-          if (!variant) {
-            return res.status(400).json({ message: `Variant not found for ${item.name}` });
-          }
-          if (variant.stock < item.qty) {
+          // Check batch availability for variant
+          const stockCheck = await batchStockUtils.checkStockAvailability(
+            item.id, 
+            item.variantId, 
+            item.qty
+          );
+          
+          if (!stockCheck.available) {
             return res.status(400).json({ 
-              message: `Insufficient stock for ${item.name} - ${item.variantName}. Available: ${variant.stock}, Required: ${item.qty}` 
+              message: `Insufficient batch stock for ${item.name} - ${item.variantName}. Available: ${stockCheck.availableQuantity}, Required: ${item.qty}` 
             });
           }
-          stockUpdates.push({
+          
+          batchOrderItems.push({
             productId: item.id,
             variantId: item.variantId,
             quantity: item.qty,
             type: 'variant'
           });
         } else {
-          // Handle regular product stock
-          if (product.stock < item.qty) {
+          // Check batch availability for main product
+          const stockCheck = await batchStockUtils.checkStockAvailability(
+            item.id, 
+            null, 
+            item.qty
+          );
+          
+          if (!stockCheck.available) {
             return res.status(400).json({ 
-              message: `Insufficient stock for ${item.name}. Available: ${product.stock}, Required: ${item.qty}` 
+              message: `Insufficient batch stock for ${item.name}. Available: ${stockCheck.availableQuantity}, Required: ${item.qty}` 
             });
           }
-          stockUpdates.push({
+          
+          batchOrderItems.push({
             productId: item.id,
+            variantId: null,
             quantity: item.qty,
             type: 'product'
           });
@@ -740,32 +892,49 @@ export const createOrder = async (req, res) => {
       } catch (updateError) {
         console.error('[CREATE ORDER] Failed to update transaction with order ID:', updateError);
       }
-    }    // Reduce stock after successful order creation
+    }    // Allocate batches using FEFO after successful order creation
+    let batchAllocationResult = null;
+    if (batchOrderItems.length > 0) {
+      try {
+        batchAllocationResult = await batchStockUtils.allocateStockForOrder(batchOrderItems, order._id);
+        
+        if (!batchAllocationResult.success) {
+          // If batch allocation fails, we need to handle it carefully
+          console.error('[CREATE ORDER] Batch allocation failed:', batchAllocationResult.errors);
+          
+          // Optionally, you could still allow the order but mark it as needing manual review
+          // For now, we'll fail the order creation
+          await Order.findByIdAndDelete(order._id);
+          
+          return res.status(400).json({
+            success: false,
+            message: 'Failed to allocate stock from batches',
+            errors: batchAllocationResult.errors
+          });
+        }
+        
+        console.log(`[CREATE ORDER] Successfully allocated batches for order ${order._id}`);
+      } catch (allocationError) {
+        console.error('[CREATE ORDER] Batch allocation error:', allocationError);
+        
+        // Delete the order if batch allocation fails
+        await Order.findByIdAndDelete(order._id);
+        
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to allocate stock from batches',
+          error: allocationError.message
+        });
+      }
+    }
+
+    // Reduce combo pack stock for combo items (non-batch tracked items)
     for (const update of stockUpdates) {
       if (update.type === 'combo') {
         // Reduce combo pack stock
         const ComboPack = (await import('../models/ComboPack.js')).default;
         await ComboPack.updateOne(
           { _id: update.id },
-          { 
-            $inc: { 
-              stock: -update.quantity,
-              purchaseCount: update.quantity // Track purchase count for analytics
-            } 
-          }
-        );      } else if (update.type === 'variant') {
-        await Product.updateOne(
-          { _id: update.productId, 'variants.id': update.variantId },
-          { $inc: { 'variants.$.stock': -update.quantity } }
-        );
-        // Increment purchase count for the main product when variant is purchased
-        await Product.updateOne(
-          { _id: update.productId },
-          { $inc: { purchaseCount: update.quantity } }
-        );
-      } else if (update.type === 'product') {
-        await Product.updateOne(
-          { _id: update.productId },
           { 
             $inc: { 
               stock: -update.quantity,
@@ -1788,7 +1957,9 @@ export const getDeliverySlot = async (req, res) => {
 export const bulkCreateProducts = async (req, res) => {
   try {
     console.log('[BULK UPLOAD] Starting bulk product creation...');
-    
+
+    console.log('[BULK UPLOAD] Request body:', { userId: req.user.id || req.user._id || req.user.userId || 'Admin' });
+
     // Parse products data from request body with robust error handling
     let products;
     try {
@@ -1827,6 +1998,21 @@ export const bulkCreateProducts = async (req, res) => {
         message: 'Invalid products data format. Expected JSON array.',
         error: parseError.message
       });
+    }
+    
+    // Parse batch configuration from request body
+    let batchConfig = null;
+    try {
+      if (req.body.batchConfig) {
+        batchConfig = typeof req.body.batchConfig === 'string' 
+          ? JSON.parse(req.body.batchConfig) 
+          : req.body.batchConfig;
+        console.log('[BULK UPLOAD] Batch configuration:', batchConfig);
+      }
+    } catch (batchParseError) {
+      console.error('[BULK UPLOAD] Failed to parse batch configuration:', batchParseError);
+      // Continue without batch config if parsing fails
+      batchConfig = null;
     }
     
     // Handle image files with safe fallback
@@ -2169,6 +2355,52 @@ export const bulkCreateProducts = async (req, res) => {
         
         console.log(`[BULK UPLOAD] Successfully created product: ${productName} (ID: ${newProduct._id})`);
         
+        // Define supplier info for batch creation using batch config or defaults
+        let supplierInfo;
+        if (batchConfig) {
+          if (!batchConfig.differentSuppliers && batchConfig.globalSupplier && batchConfig.globalSupplier.name) {
+            supplierInfo = {
+              supplierName: batchConfig.globalSupplier.name,
+              purchaseOrderNumber: productData.purchaseOrderNumber || '',
+              receivedDate: productData.receivedDate ? new Date(productData.receivedDate) : new Date(),
+              contactInfo: batchConfig.globalSupplier.contactInfo || 'info@indiraafoods.com'
+            };
+          } else {
+            supplierInfo = {
+              supplierName: productData.supplierName || 'Indiraa Foods Pvt Ltd',
+              purchaseOrderNumber: productData.purchaseOrderNumber || '',
+              receivedDate: productData.receivedDate ? new Date(productData.receivedDate) : new Date(),
+              contactInfo: productData.supplierContact || 'info@indiraafoods.com'
+            };
+          }
+        } else {
+          supplierInfo = {
+            supplierName: productData.supplierName || 'Indiraa Foods Pvt Ltd',
+            purchaseOrderNumber: productData.purchaseOrderNumber || '',
+            receivedDate: productData.receivedDate ? new Date(productData.receivedDate) : new Date(),
+            contactInfo: productData.supplierContact || 'info@indiraafoods.com'
+          };
+        }
+        
+        // Store product for bulk batch creation (we'll process all at once later)
+        const productForBatching = {
+          productId: newProduct._id,
+          hasVariants: newProduct.hasVariants,
+          variants: newProduct.variants,
+          stock: newProduct.stock,
+          manufacturingDate: productData.manufacturingDate,
+          expiryDate: productData.expiryDate,
+          bestBeforeDate: productData.bestBeforeDate,
+          supplierInfo: supplierInfo,
+          location: productData.location || 'Main Warehouse'
+        };
+        
+        // Store product for bulk batch creation (we'll process all at once later)
+        if (!req.bulkProducts) {
+          req.bulkProducts = [];
+        }
+        req.bulkProducts.push(productForBatching);
+        
         results.successful.push({
           name: productName,
           id: newProduct._id,
@@ -2188,6 +2420,38 @@ export const bulkCreateProducts = async (req, res) => {
           index: i + 1
         });
         results.summary.failed++;
+      }
+    }
+    
+    // Create bulk batch group for all products
+    let bulkBatchResults = null;
+    if (req.bulkProducts && req.bulkProducts.length > 0) {
+      try {
+        console.log(`[BULK UPLOAD] Creating bulk batch group for ${req.bulkProducts.length} products...`);
+        
+        const groupIdentifier = `BULK-${Date.now()}`;
+        const { createBulkBatchGroup } = await import('../services/batchGroupService.js');
+        
+        bulkBatchResults = await createBulkBatchGroup({
+          products: req.bulkProducts,
+          batchConfig,
+          groupIdentifier
+        }, req.user.id || req.user._id || req.user.userId || '6846fc321c27a991b995164f');
+        
+        console.log(`[BULK UPLOAD] Created batch group: ${bulkBatchResults.batchGroupNumber} with ${bulkBatchResults.totalProducts} products`);
+        
+        // Add batch info to results
+        results.batchGroup = {
+          batchGroupNumber: bulkBatchResults.batchGroupNumber,
+          totalProducts: bulkBatchResults.totalProducts,
+          totalItems: bulkBatchResults.totalItems
+        };
+        results.summary.batchGroupsCreated = 1;
+        
+      } catch (batchError) {
+        console.error('[BULK UPLOAD] Bulk batch group creation error:', batchError);
+        results.batchError = batchError.message;
+        // Don't fail the entire upload if batch creation fails
       }
     }
     
