@@ -197,18 +197,30 @@ export const getBatchGroupById = async (req, res) => {
     enrichedProducts.forEach(product => {
       if (product.variantDetails && product.variantDetails.length > 0) {
         product.variantDetails.forEach(variant => {
-          totalItems += variant.quantity;
-          availableItems += variant.availableQuantity;
-          allocatedItems += variant.allocatedQuantity;
-          usedItems += variant.usedQuantity;
-          currentTotalStock += variant.currentVariantStock || 0;
+          const quantity = variant.quantity || 0;
+          const availableQuantity = variant.availableQuantity || 0;
+          const allocatedQuantity = variant.allocatedQuantity || 0;
+          const usedQuantity = variant.usedQuantity || 0;
+          const currentVariantStock = variant.currentVariantStock || 0;
+          
+          totalItems += quantity;
+          availableItems += availableQuantity;
+          allocatedItems += allocatedQuantity;
+          usedItems += usedQuantity;
+          currentTotalStock += currentVariantStock;
         });
       } else {
-        totalItems += product.quantity || 0;
-        availableItems += product.availableQuantity || 0;
-        allocatedItems += product.allocatedQuantity || 0;
-        usedItems += product.usedQuantity || 0;
-        currentTotalStock += product.currentStock || 0;
+        const quantity = product.quantity || 0;
+        const availableQuantity = product.availableQuantity || 0;
+        const allocatedQuantity = product.allocatedQuantity || 0;
+        const usedQuantity = product.usedQuantity || 0;
+        const currentStock = product.currentStock || 0;
+        
+        totalItems += quantity;
+        availableItems += availableQuantity;
+        allocatedItems += allocatedQuantity;
+        usedItems += usedQuantity;
+        currentTotalStock += currentStock;
       }
     });
 
@@ -223,14 +235,25 @@ export const getBatchGroupById = async (req, res) => {
         allocatedItems,
         usedItems,
         currentTotalStock,
-        utilizationRate: totalItems > 0 ? ((usedItems / totalItems) * 100).toFixed(2) : 0,
-        allocationRate: totalItems > 0 ? ((allocatedItems / totalItems) * 100).toFixed(2) : 0,
-        availabilityRate: totalItems > 0 ? ((availableItems / totalItems) * 100).toFixed(2) : 0,
+        utilizationRate: totalItems > 0 ? parseFloat(((usedItems / totalItems) * 100).toFixed(2)) : 0,
+        allocationRate: totalItems > 0 ? parseFloat(((allocatedItems / totalItems) * 100).toFixed(2)) : 0,
+        availabilityRate: totalItems > 0 ? parseFloat(((availableItems / totalItems) * 100).toFixed(2)) : 0,
+        totalUsedAndAllocated: usedItems + allocatedItems,
+        totalUsedAndAllocatedRate: totalItems > 0 ? parseFloat((((usedItems + allocatedItems) / totalItems) * 100).toFixed(2)) : 0,
         isExpired: batchGroup.defaultExpiryDate ? new Date() > new Date(batchGroup.defaultExpiryDate) : false,
-        isDepleted: availableItems === 0,
+        isDepleted: availableItems === 0 && totalItems > 0,
         orderAllocationsCount: batchGroup.orderAllocations?.length || 0
       }
     };
+
+    console.log(`[BATCH CONTROLLER] Batch group ${id} statistics:`, {
+      totalItems,
+      availableItems,
+      allocatedItems,
+      usedItems,
+      utilizationRate: totalItems > 0 ? parseFloat(((usedItems / totalItems) * 100).toFixed(2)) : 0,
+      availabilityRate: totalItems > 0 ? parseFloat(((availableItems / totalItems) * 100).toFixed(2)) : 0
+    });
 
     console.log(`[BATCH CONTROLLER] Batch group ${id} fetched with ${enrichedProducts.length} products`);
 
@@ -304,16 +327,26 @@ export const getBatchAnalytics = async (req, res) => {
       batchGroup.products?.forEach(product => {
         if (product.variants && product.variants.length > 0) {
           product.variants.forEach(variant => {
-            batchTotal += variant.quantity;
-            batchAvailable += variant.availableQuantity;
-            batchAllocated += variant.allocatedQuantity;
-            batchUsed += variant.usedQuantity;
+            const quantity = variant.quantity || 0;
+            const availableQuantity = variant.availableQuantity || 0;
+            const allocatedQuantity = variant.allocatedQuantity || 0;
+            const usedQuantity = variant.usedQuantity || 0;
+            
+            batchTotal += quantity;
+            batchAvailable += availableQuantity;
+            batchAllocated += allocatedQuantity;
+            batchUsed += usedQuantity;
           });
         } else {
-          batchTotal += product.quantity || 0;
-          batchAvailable += product.availableQuantity || 0;
-          batchAllocated += product.allocatedQuantity || 0;
-          batchUsed += product.usedQuantity || 0;
+          const quantity = product.quantity || 0;
+          const availableQuantity = product.availableQuantity || 0;
+          const allocatedQuantity = product.allocatedQuantity || 0;
+          const usedQuantity = product.usedQuantity || 0;
+          
+          batchTotal += quantity;
+          batchAvailable += availableQuantity;
+          batchAllocated += allocatedQuantity;
+          batchUsed += usedQuantity;
         }
       });
 
@@ -322,7 +355,8 @@ export const getBatchAnalytics = async (req, res) => {
       allocatedItems += batchAllocated;
       usedItems += batchUsed;
 
-      if (batchAvailable === 0) depletedBatchGroups++;
+      // A batch group is depleted if it has no available items
+      if (batchAvailable === 0 && batchTotal > 0) depletedBatchGroups++;
     });
 
     // Calculate expiring soon (next 30 days)
@@ -356,9 +390,12 @@ export const getBatchAnalytics = async (req, res) => {
         availableItems,
         allocatedItems,
         usedItems,
-        utilizationRate: totalItems > 0 ? ((usedItems / totalItems) * 100).toFixed(2) : 0,
-        allocationRate: totalItems > 0 ? ((allocatedItems / totalItems) * 100).toFixed(2) : 0,
-        availabilityRate: totalItems > 0 ? ((availableItems / totalItems) * 100).toFixed(2) : 0
+        utilizationRate: totalItems > 0 ? parseFloat(((usedItems / totalItems) * 100).toFixed(2)) : 0,
+        allocationRate: totalItems > 0 ? parseFloat(((allocatedItems / totalItems) * 100).toFixed(2)) : 0,
+        availabilityRate: totalItems > 0 ? parseFloat(((availableItems / totalItems) * 100).toFixed(2)) : 0,
+        // Additional useful metrics
+        totalUsedAndAllocated: usedItems + allocatedItems,
+        totalUsedAndAllocatedRate: totalItems > 0 ? parseFloat((((usedItems + allocatedItems) / totalItems) * 100).toFixed(2)) : 0
       },
       breakdowns: {
         status: statusBreakdown,
@@ -369,6 +406,16 @@ export const getBatchAnalytics = async (req, res) => {
     };
 
     console.log(`[BATCH CONTROLLER] Analytics generated for ${totalBatchGroups} batch groups`);
+    console.log(`[BATCH CONTROLLER] Analytics Summary:`, {
+      totalBatchGroups,
+      activeBatchGroups,
+      totalItems,
+      availableItems,
+      allocatedItems,
+      usedItems,
+      utilizationRate: totalItems > 0 ? parseFloat(((usedItems / totalItems) * 100).toFixed(2)) : 0,
+      availabilityRate: totalItems > 0 ? parseFloat(((availableItems / totalItems) * 100).toFixed(2)) : 0
+    });
 
     res.json({
       success: true,

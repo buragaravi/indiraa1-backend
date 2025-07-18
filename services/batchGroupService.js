@@ -1,4 +1,5 @@
 import BatchGroup from '../models/BatchGroup.js';
+import mongoose from 'mongoose';
 
 /**
  * Create a single batch group for bulk upload
@@ -454,6 +455,159 @@ export const getBatchGroups = async (filters = {}) => {
   }
 };
 
+// Move allocated items to used items when order is delivered
+export const moveAllocatedToUsed = async (orderId) => {
+  try {
+    console.log(`[BATCH GROUP] ===== MOVING ALLOCATED TO USED FOR ORDER ${orderId} =====`);
+    
+    // Convert orderId to ObjectId if it's a string
+    const orderObjectId = typeof orderId === 'string' ? new mongoose.Types.ObjectId(orderId) : orderId;
+    console.log(`[BATCH GROUP] Using order ObjectId: ${orderObjectId}`);
+    
+    // Find all batch groups that have allocations for this order
+    const batchGroups = await BatchGroup.find({
+      'orderAllocations.orderId': orderObjectId
+    });
+    
+    console.log(`[BATCH GROUP] Found ${batchGroups.length} batch groups with allocations for order ${orderId}`);
+    
+    if (batchGroups.length === 0) {
+      console.log(`[BATCH GROUP] No batch groups found with allocations for order ${orderId}`);
+      return {
+        success: true,
+        updatedBatchGroups: [],
+        errors: [],
+        message: 'No batch groups found for this order'
+      };
+    }
+    
+    const updatedBatchGroups = [];
+    const errors = [];
+    
+    for (const batchGroup of batchGroups) {
+      try {
+        console.log(`[BATCH GROUP] Processing batch group ${batchGroup._id}`);
+        
+        // Find all allocations for this order (regardless of current status)
+        const orderAllocations = batchGroup.orderAllocations.filter(
+          allocation => allocation.orderId.toString() === orderObjectId.toString()
+        );
+        
+        console.log(`[BATCH GROUP] Found ${orderAllocations.length} allocations in batch group ${batchGroup._id}`);
+        
+        let hasUpdates = false;
+        
+        // Process all allocations for this order
+        for (const allocation of orderAllocations) {
+          console.log(`[BATCH GROUP] Processing allocation:`, {
+            orderId: allocation.orderId,
+            currentStatus: allocation.status,
+            itemsCount: allocation.items?.length || 0
+          });
+          
+          // Skip if already marked as delivered
+          if (allocation.status === 'Delivered') {
+            console.log(`[BATCH GROUP] Allocation already marked as delivered, skipping`);
+            continue;
+          }
+          
+          // Mark allocation as delivered (since the entire order is delivered)
+          allocation.status = 'Delivered';
+          allocation.deliveredAt = new Date();
+          hasUpdates = true;
+          
+          console.log(`[BATCH GROUP] Updated allocation status to Delivered`);
+          
+          // Process all items in this allocation
+          const itemsToProcess = allocation.items || [];
+          
+          for (const item of itemsToProcess) {
+            console.log(`[BATCH GROUP] Processing item:`, {
+              productId: item.productId,
+              variantId: item.variantId,
+              quantity: item.quantity
+            });
+            
+            // Find the product in the batch group
+            const batchProduct = batchGroup.products.find(p => {
+              const productMatch = p.productId.toString() === item.productId.toString();
+              const variantMatch = (p.variantId === item.variantId) || 
+                                 (p.variantId == null && item.variantId == null);
+              return productMatch && variantMatch;
+            });
+            
+            if (batchProduct) {
+              console.log(`[BATCH GROUP] Found batch product, current quantities:`, {
+                productId: batchProduct.productId,
+                variantId: batchProduct.variantId,
+                quantity: batchProduct.quantity,
+                availableQuantity: batchProduct.availableQuantity,
+                allocatedQuantity: batchProduct.allocatedQuantity,
+                usedQuantity: batchProduct.usedQuantity,
+                quantityToMove: item.quantity
+              });
+              
+              // Move quantity from allocated to used
+              const quantityToMove = item.quantity;
+              batchProduct.allocatedQuantity = Math.max(0, batchProduct.allocatedQuantity - quantityToMove);
+              batchProduct.usedQuantity = (batchProduct.usedQuantity || 0) + quantityToMove;
+              
+              console.log(`[BATCH GROUP] Updated quantities:`, {
+                newAllocated: batchProduct.allocatedQuantity,
+                newUsed: batchProduct.usedQuantity,
+                newAvailable: batchProduct.availableQuantity
+              });
+              
+              hasUpdates = true;
+            } else {
+              console.error(`[BATCH GROUP] Product not found in batch group:`, {
+                productId: item.productId,
+                variantId: item.variantId,
+                batchGroupId: batchGroup._id
+              });
+              
+              errors.push(`Product ${item.productId} (variant: ${item.variantId}) not found in batch group ${batchGroup._id}`);
+            }
+          }
+        }
+        
+        if (hasUpdates) {
+          // Save the updated batch group
+          await batchGroup.save();
+          updatedBatchGroups.push(batchGroup._id);
+          
+          console.log(`[BATCH GROUP] Successfully updated batch group ${batchGroup._id}`);
+        } else {
+          console.log(`[BATCH GROUP] No updates needed for batch group ${batchGroup._id} (already processed)`);
+        }
+        
+      } catch (error) {
+        console.error(`[BATCH GROUP] Error updating batch group ${batchGroup._id}:`, error);
+        errors.push(`Error updating batch group ${batchGroup._id}: ${error.message}`);
+      }
+    }
+    
+    console.log(`[BATCH GROUP] ===== COMPLETED MOVING ALLOCATED TO USED =====`);
+    console.log(`[BATCH GROUP] Updated ${updatedBatchGroups.length} batch groups for order ${orderId}`);
+    
+    return {
+      success: errors.length === 0,
+      updatedBatchGroups,
+      errors,
+      message: `Successfully updated ${updatedBatchGroups.length} batch groups. Order ${orderId} marked as delivered.`
+    };
+    
+  } catch (error) {
+    console.error('[BATCH GROUP] Error in moveAllocatedToUsed:', error);
+    return {
+      success: false,
+      errors: [error.message],
+      updatedBatchGroups: [],
+      message: 'Failed to move allocated items to used'
+    };
+  }
+};
+
 export default {
   createBulkBatchGroup,
   addProductToBatch,
@@ -461,5 +615,6 @@ export default {
   createSingleProductBatch,
   allocateBatchesForOrder,
   markBatchesAsUsed,
-  getBatchGroups
+  getBatchGroups,
+  moveAllocatedToUsed
 };

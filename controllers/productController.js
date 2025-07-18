@@ -1118,6 +1118,28 @@ export const updateOrderStatus = async (req, res) => {
 
     await order.save();
 
+    // Handle batch group allocation updates when order is delivered
+    if (status === 'Delivered') {
+      try {
+        console.log(`[ORDER STATUS] Order ${order._id} marked as delivered, updating batch allocations`);
+        
+        // Import batch group service
+        const batchGroupService = await import('../services/batchGroupService.js');
+        
+        // Move allocated items to used items in batch groups
+        const batchUpdateResult = await batchGroupService.moveAllocatedToUsed(order._id);
+        
+        if (batchUpdateResult.success) {
+          console.log(`[ORDER STATUS] Successfully updated batch allocations for order ${order._id}:`, batchUpdateResult);
+        } else {
+          console.error(`[ORDER STATUS] Failed to update batch allocations for order ${order._id}:`, batchUpdateResult.errors);
+        }
+      } catch (batchError) {
+        console.error('[ORDER STATUS] Error updating batch allocations:', batchError);
+        // Don't fail order status update if batch update fails
+      }
+    }
+
     // Get user for notifications
     const user = await User.findById(order.userId);
     if (!user) {

@@ -104,6 +104,12 @@ const batchGroupSchema = new mongoose.Schema({
   orderAllocations: [{
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
     allocatedAt: { type: Date, default: Date.now },
+    status: { 
+      type: String, 
+      enum: ['Allocated', 'Delivered', 'Cancelled'], 
+      default: 'Allocated' 
+    },
+    deliveredAt: { type: Date },
     items: [{
       productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
       variantId: { type: String }, // null for non-variant products
