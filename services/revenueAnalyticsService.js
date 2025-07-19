@@ -79,7 +79,11 @@ export const calculateRevenueAnalytics = async () => {
     for (const order of orders) {
       const amount = order.totalAmount || 0;
       const status = order.status?.toLowerCase() || 'pending';
-      const paymentMethod = order.paymentMethod?.toUpperCase() || 'UPI';
+      
+      // Fix payment method logic: treat UPI/ONLINE as UPI, everything else as CASH (COD)
+      const rawPaymentMethod = order.paymentMethod?.toUpperCase() || 'CASH';
+      const paymentMethod = (rawPaymentMethod === 'UPI' || rawPaymentMethod === 'ONLINE') ? 'UPI' : 'CASH';
+      
       const paymentStatus = order.paymentStatus?.toUpperCase() || 'PENDING';
       const orderDate = new Date(order.createdAt);
       

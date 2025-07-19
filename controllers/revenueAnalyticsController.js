@@ -229,12 +229,30 @@ export const getRevenueTrends = async (req, res) => {
           avgOrderValue: { $avg: '$totalAmount' },
           upiRevenue: {
             $sum: {
-              $cond: [{ $eq: ['$paymentMethod', 'UPI'] }, '$totalAmount', 0]
+              $cond: [
+                { 
+                  $or: [
+                    { $eq: ['$paymentMethod', 'UPI'] },
+                    { $eq: ['$paymentMethod', 'ONLINE'] }
+                  ]
+                }, 
+                '$totalAmount', 
+                0
+              ]
             }
           },
           cashRevenue: {
             $sum: {
-              $cond: [{ $eq: ['$paymentMethod', 'CASH'] }, '$totalAmount', 0]
+              $cond: [
+                { 
+                  $and: [
+                    { $ne: ['$paymentMethod', 'UPI'] },
+                    { $ne: ['$paymentMethod', 'ONLINE'] }
+                  ]
+                }, 
+                '$totalAmount', 
+                0
+              ]
             }
           },
           deliveredRevenue: {
@@ -350,7 +368,10 @@ const calculateAnalyticsForOrders = async (orders) => {
   for (const order of orders) {
     const amount = order.totalAmount || 0;
     const status = order.status?.toLowerCase() || 'pending';
-    const paymentMethod = order.paymentMethod?.toUpperCase() || 'UPI';
+    const originalPaymentMethod = order.paymentMethod?.toUpperCase() || 'CASH';
+    
+    // Fix payment method logic: UPI/ONLINE = UPI, everything else = CASH (COD)
+    const paymentMethod = (originalPaymentMethod === 'UPI' || originalPaymentMethod === 'ONLINE') ? 'UPI' : 'CASH';
     const paymentStatus = order.paymentStatus?.toUpperCase() || 'PENDING';
     
     analytics.summary.totalRevenue += amount;
@@ -368,7 +389,7 @@ const calculateAnalyticsForOrders = async (orders) => {
     analytics.byStatus[status].count++;
     analytics.byStatus[status].amount += amount;
     
-    // By payment method
+    // By payment method (fixed logic)
     if (analytics.byPaymentMethod[paymentMethod]) {
       analytics.byPaymentMethod[paymentMethod].total += amount;
       if (status === 'delivered' && paymentStatus === 'PAID') {

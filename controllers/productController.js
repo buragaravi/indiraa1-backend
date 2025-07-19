@@ -1019,11 +1019,65 @@ export const getAllOrders = async (req, res) => {
     } else {
       console.log('Fetching all orders (no user attached to request)');
     }
-    const orders = await Order.find().sort({ placedAt: -1 });
-    // Add id field for frontend compatibility
-    console.log('Orders fetched:', orders.length);
     
-    res.json({ orders: orders.map(order => ({ ...order.toObject(), id: order._id })) });
+    // Build query based on query parameters for drill-down functionality
+    let query = {};
+    const { status, payment, paymentStatus, limit, page } = req.query;
+    
+    // Filter by status if provided
+    if (status) {
+      query.status = status.toLowerCase();
+    }
+    
+    // Filter by payment method if provided
+    if (payment) {
+      const paymentMethodUpper = payment.toUpperCase();
+      if (paymentMethodUpper === 'UPI') {
+        // For UPI, match UPI or ONLINE
+        query.paymentMethod = { $in: ['UPI', 'ONLINE'] };
+      } else if (paymentMethodUpper === 'CASH' || paymentMethodUpper === 'COD') {
+        // For CASH/COD, match anything that's not UPI or ONLINE
+        query.paymentMethod = { $nin: ['UPI', 'ONLINE'] };
+      } else {
+        query.paymentMethod = paymentMethodUpper;
+      }
+    }
+    
+    // Filter by payment status if provided
+    if (paymentStatus) {
+      query.paymentStatus = paymentStatus.toUpperCase();
+    }
+    
+    // Pagination
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 50; // Default limit
+    const skip = (pageNum - 1) * limitNum;
+    
+    console.log('Orders query filter:', query);
+    
+    // Get orders with filters and pagination
+    const orders = await Order.find(query)
+      .sort({ placedAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .populate('userId', 'name email phone')
+      .lean();
+    
+    // Get total count for pagination
+    const totalOrders = await Order.countDocuments(query);
+    
+    // Add id field for frontend compatibility
+    console.log('Orders fetched:', orders.length, 'of', totalOrders, 'total');
+    
+    res.json({ 
+      orders: orders.map(order => ({ ...order, id: order._id })),
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(totalOrders / limitNum),
+        totalOrders,
+        limit: limitNum
+      }
+    });
   } catch (_err) {
     console.error('[GET ALL ORDERS]', _err);
     res.status(500).json({ message: 'Failed to fetch orders.' });

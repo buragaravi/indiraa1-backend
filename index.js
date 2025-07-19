@@ -38,6 +38,7 @@ import adminDeliveryRoutes from './routes/adminDelivery.js';
 import subAdminRoutes from './routes/subAdmin.js';
 import batchRoutes from './routes/batch.js';
 import revenueAnalyticsRoutes from './routes/revenueAnalytics.js';
+import adminRoutes from './routes/admin.js';
 import { initializeBatchScheduler } from './utils/batchScheduler.js';
 
 const app = express();
@@ -56,6 +57,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/delivery-auth', deliveryAuthRoutes);
 app.use('/api/delivery', deliveryRoutes);
 app.use('/api/admin/delivery', adminDeliveryRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/sub-admin', subAdminRoutes);
 app.use('/api/batches', batchRoutes);
 app.use('/api/revenue-analytics', revenueAnalyticsRoutes);
