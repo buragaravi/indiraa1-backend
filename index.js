@@ -39,6 +39,12 @@ import subAdminRoutes from './routes/subAdmin.js';
 import batchRoutes from './routes/batch.js';
 import revenueAnalyticsRoutes from './routes/revenueAnalytics.js';
 import adminRoutes from './routes/admin.js';
+// Return & Refund Routes
+import returnRoutes from './routes/returns.js';
+import adminReturnRoutes from './routes/adminReturns.js';
+import warehouseReturnRoutes from './routes/warehouseReturns.js';
+import deliveryReturnRoutes from './routes/deliveryReturns.js';
+import returnAnalyticsRoutes from './routes/returnAnalytics.js';
 import { initializeBatchScheduler } from './utils/batchScheduler.js';
 
 const app = express();
@@ -61,6 +67,13 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/sub-admin', subAdminRoutes);
 app.use('/api/batches', batchRoutes);
 app.use('/api/revenue-analytics', revenueAnalyticsRoutes);
+
+// Return & Refund Routes
+app.use('/api/returns', returnRoutes);
+app.use('/api/admin/returns', adminReturnRoutes);
+app.use('/api/warehouse/returns', warehouseReturnRoutes);
+app.use('/api/delivery/returns', deliveryReturnRoutes);
+app.use('/api/return-analytics', returnAnalyticsRoutes);
 
 // Add endpoint to receive and store user push tokens
 app.post('/api/users/push-token', authenticateUser, async (req, res) => {

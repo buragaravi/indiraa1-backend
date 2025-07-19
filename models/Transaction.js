@@ -14,6 +14,7 @@ const transactionSchema = new mongoose.Schema({
       'REFERRAL_BONUS',    // Coins earned from successful referrals
       'VISIT_REWARD',      // Coins earned from referral visits
       'COIN_REDEMPTION',   // Coins spent/redeemed
+      'REFUND',            // Coins credited from returns
       'MANUAL_ADJUSTMENT'  // Admin adjustments
     ],
     required: true
@@ -35,6 +36,12 @@ const transactionSchema = new mongoose.Schema({
     ref: 'Order' 
   },
   
+  // Reference to return request (for refunds)
+  returnId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Return' 
+  },
+  
   // Reference to referred user (for referral bonuses)
   referredUserId: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -53,7 +60,21 @@ const transactionSchema = new mongoose.Schema({
     rewardRate: Number,         // Coins per 100 rupees
     referralCode: String,       // For referral transactions
     visitCount: Number,         // For visit rewards
-    adminNote: String          // For manual adjustments
+    adminNote: String,          // For manual adjustments
+    
+    // Refund specific metadata
+    refundDetails: {
+      originalAmount: Number,   // Original rupee amount
+      refundAmount: Number,     // Final refund amount after deductions
+      conversionRate: { type: Number, default: 5 }, // 1 Rupee = 5 Coins
+      deductions: [{
+        type: String,
+        amount: Number,
+        reason: String
+      }],
+      processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+      returnReason: String
+    }
   },
   
   // Transaction status
@@ -71,6 +92,7 @@ const transactionSchema = new mongoose.Schema({
 transactionSchema.index({ userId: 1, createdAt: -1 });
 transactionSchema.index({ type: 1 });
 transactionSchema.index({ orderId: 1 });
+transactionSchema.index({ returnId: 1 });
 transactionSchema.index({ referredUserId: 1 });
 
 // Virtual for transaction direction

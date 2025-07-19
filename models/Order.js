@@ -197,6 +197,26 @@ const orderSchema = new mongoose.Schema({
   
   deliveryRating: { type: Number, min: 1, max: 5 },
   deliveryReview: { type: String },
+  
+  // Return Information
+  returnInfo: {
+    isReturnable: { type: Boolean, default: true },
+    returnWindow: { type: Number, default: 7 }, // days
+    returnEligibilityExpiry: Date, // calculated from deliveredAt + 7 days
+    hasActiveReturn: { type: Boolean, default: false },
+    returnHistory: [{
+      returnId: { type: mongoose.Schema.Types.ObjectId, ref: 'Return' },
+      status: String,
+      createdAt: Date,
+      completedAt: Date
+    }],
+    returnRestrictions: [{
+      reason: String,
+      restrictedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+      restrictedAt: Date
+    }]
+  },
+  
   placedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
@@ -349,6 +369,37 @@ orderSchema.methods.verifyDeliveryOTP = function(enteredOTP, agentId) {
   return { success: true };
 };
 
+// Method to calculate return eligibility
+orderSchema.methods.calculateReturnEligibility = function() {
+  if (!this.delivery.deliveredAt || this.status !== 'Delivered') {
+    return { 
+      isEligible: false, 
+      reason: 'Order not delivered yet',
+      daysRemaining: 0,
+      eligibilityExpiry: null
+    };
+  }
+  
+  const deliveredAt = this.delivery.deliveredAt;
+  const currentDate = new Date();
+  const daysSinceDelivery = (currentDate - deliveredAt) / (1000 * 60 * 60 * 24);
+  const isEligible = daysSinceDelivery <= 7 && !this.returnInfo.hasActiveReturn;
+  
+  return {
+    isEligible: isEligible,
+    daysRemaining: Math.max(0, 7 - Math.floor(daysSinceDelivery)),
+    eligibilityExpiry: new Date(deliveredAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+    reason: !isEligible ? (daysSinceDelivery > 7 ? 'Return window expired' : 'Active return exists') : null
+  };
+};
+
+// Method to update return eligibility expiry when delivered
+orderSchema.methods.updateReturnEligibility = function() {
+  if (this.delivery.deliveredAt && this.status === 'Delivered') {
+    this.returnInfo.returnEligibilityExpiry = new Date(this.delivery.deliveredAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+  }
+};
+
 // Method to update delivery slot modifiability based on status
 orderSchema.pre('save', function(next) {
   if (this.isModified('status')) {
@@ -372,11 +423,18 @@ orderSchema.pre('save', function(next) {
       case 'delivered':
         if (!this.delivery.deliveredAt) this.delivery.deliveredAt = now;
         this.status = 'Delivered'; // Update main order status
+        // Update return eligibility when order is delivered
+        this.updateReturnEligibility();
         break;
       case 'failed':
         if (!this.delivery.failedAt) this.delivery.failedAt = now;
         break;
     }
+  }
+  
+  // Update return eligibility when delivery status changes to delivered
+  if (this.isModified('status') && this.status === 'Delivered' && this.delivery.deliveredAt) {
+    this.updateReturnEligibility();
   }
   
   next();
