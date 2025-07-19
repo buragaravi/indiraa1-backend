@@ -483,6 +483,7 @@ export const moveAllocatedToUsed = async (orderId) => {
     
     const updatedBatchGroups = [];
     const errors = [];
+    const comboItemsProcessed = new Set(); // Track combo items to avoid double processing
     
     for (const batchGroup of batchGroups) {
       try {
@@ -525,8 +526,16 @@ export const moveAllocatedToUsed = async (orderId) => {
             console.log(`[BATCH GROUP] Processing item:`, {
               productId: item.productId,
               variantId: item.variantId,
-              quantity: item.quantity
+              quantity: item.quantity,
+              type: item.type || 'regular', // Track if it's a combo-item
+              parentComboId: item.parentComboId || null
             });
+            
+            // Track combo pack items for analytics
+            if (item.type === 'combo-item' && item.parentComboId) {
+              comboItemsProcessed.add(item.parentComboId);
+              console.log(`[BATCH GROUP] Processing combo pack item from combo: ${item.parentComboId}`);
+            }
             
             // Find the product in the batch group
             const batchProduct = batchGroup.products.find(p => {
@@ -632,10 +641,16 @@ export const moveAllocatedToUsed = async (orderId) => {
     console.log(`[BATCH GROUP] ===== COMPLETED MOVING ALLOCATED TO USED =====`);
     console.log(`[BATCH GROUP] Updated ${updatedBatchGroups.length} batch groups for order ${orderId}`);
     
+    // Report combo pack processing
+    if (comboItemsProcessed.size > 0) {
+      console.log(`[BATCH GROUP] Processed items from ${comboItemsProcessed.size} combo pack(s):`, Array.from(comboItemsProcessed));
+    }
+    
     return {
       success: errors.length === 0,
       updatedBatchGroups,
       errors,
+      comboPacksProcessed: Array.from(comboItemsProcessed), // Add combo pack info to response
       message: `Successfully updated ${updatedBatchGroups.length} batch groups. Order ${orderId} marked as delivered.`
     };
     
