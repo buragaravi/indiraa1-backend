@@ -371,7 +371,8 @@ orderSchema.methods.verifyDeliveryOTP = function(enteredOTP, agentId) {
 
 // Method to calculate return eligibility
 orderSchema.methods.calculateReturnEligibility = function() {
-  if (!this.delivery.deliveredAt || this.status !== 'Delivered') {
+  const status = this.status?.toLowerCase();
+  if (status !== 'delivered') {
     return { 
       isEligible: false, 
       reason: 'Order not delivered yet',
@@ -380,10 +381,16 @@ orderSchema.methods.calculateReturnEligibility = function() {
     };
   }
   
-  const deliveredAt = this.delivery.deliveredAt;
+  // Use delivery.deliveredAt if available, otherwise use a reasonable fallback
+  let deliveredAt = this.delivery?.deliveredAt;
+  if (!deliveredAt) {
+    // For delivered orders without delivery tracking, use createdAt + 3 days as fallback
+    deliveredAt = new Date(this.createdAt.getTime() + 3 * 24 * 60 * 60 * 1000);
+  }
+  
   const currentDate = new Date();
   const daysSinceDelivery = (currentDate - deliveredAt) / (1000 * 60 * 60 * 24);
-  const isEligible = daysSinceDelivery <= 7 && !this.returnInfo.hasActiveReturn;
+  const isEligible = daysSinceDelivery <= 7 && !this.returnInfo?.hasActiveReturn;
   
   return {
     isEligible: isEligible,
@@ -395,8 +402,10 @@ orderSchema.methods.calculateReturnEligibility = function() {
 
 // Method to update return eligibility expiry when delivered
 orderSchema.methods.updateReturnEligibility = function() {
-  if (this.delivery.deliveredAt && this.status === 'Delivered') {
-    this.returnInfo.returnEligibilityExpiry = new Date(this.delivery.deliveredAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const status = this.status?.toLowerCase();
+  const deliveredAt = this.delivery?.deliveredAt;
+  if (deliveredAt && status === 'delivered') {
+    this.returnInfo.returnEligibilityExpiry = new Date(deliveredAt.getTime() + 7 * 24 * 60 * 60 * 1000);
   }
 };
 
