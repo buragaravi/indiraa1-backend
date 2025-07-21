@@ -41,8 +41,24 @@ async function uploadReturnImageToS3(buffer, originalName, returnRequestId) {
 export const createReturnRequest = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { orderId, items, returnReason, customerComments } = req.body;
-
+    let { orderId, items, returnReason, customerComments } = req.body;
+    
+    // Handle case where items might be sent as a string
+    if (typeof items === 'string') {
+      try {
+        items = JSON.parse(items);
+      } catch (parseError) {
+        console.error('[CREATE RETURN] Failed to parse items string:', parseError);
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid items format'
+        });
+      }
+    }
+    
+    console.log(`[CREATE RETURN] User ${userId} creating return for order ${orderId}`);
+    console.log(`[CREATE RETURN] Items received:`, JSON.stringify(items, null, 2));
+    console.log(`[CREATE RETURN] Return reason:`, returnReason);
     // Validate input
     if (!orderId || !items || !returnReason) {
       return res.status(400).json({
@@ -105,19 +121,32 @@ export const createReturnRequest = async (req, res) => {
 
     // Validate return items against order items
     const validItems = [];
+    console.log(`[CREATE RETURN] Order items: ${JSON.stringify(order.items.map(item => ({ _id: item._id, id: item.id, name: item.name })))}`);
+    console.log(`[CREATE RETURN] Raw items parameter:`, items);
+    console.log(`[CREATE RETURN] Items type:`, typeof items);
+    console.log(`[CREATE RETURN] Items length:`, Array.isArray(items) ? items.length : 'Not an array');
+    
     for (const returnItem of items) {
-      const orderItem = order.items.find(item => 
-        item._id.toString() === returnItem.orderItemId
-      );
+      console.log(`[CREATE RETURN] Validating return item:`, returnItem);
+      console.log(`[CREATE RETURN] Return item type:`, typeof returnItem);
+      console.log(`[CREATE RETURN] Return item keys:`, Object.keys(returnItem || {}));
+      console.log(`[CREATE RETURN] Looking for orderItemId: ${returnItem?.orderItemId}`);
       
+      const orderItem = order.items.find(item => {
+        const itemIdMatch = item._id.toString() === returnItem?.orderItemId || item.id.toString() === returnItem?.orderItemId;
+        console.log(`[CREATE RETURN] Checking item ${item._id} (${item.name}): ${itemIdMatch}`);
+        return itemIdMatch;
+      });
+      
+      console.log(`[CREATE RETURN] Found orderItem:`, orderItem ? { _id: orderItem._id, name: orderItem.name } : 'NOT FOUND');
       if (!orderItem) {
         return res.status(400).json({
           success: false,
-          message: `Invalid order item ID: ${returnItem.orderItemId}`
+          message: `Invalid order item ID: ${returnItem?.orderItemId}. Available items: ${order.items.map(i => `${i._id}(${i.name})`).join(', ')}`
         });
       }
 
-      if (returnItem.quantity > orderItem.qty) {
+      if (returnItem?.quantity > orderItem.qty) {
         return res.status(400).json({
           success: false,
           message: `Return quantity exceeds ordered quantity for item: ${orderItem.name}`
@@ -125,12 +154,12 @@ export const createReturnRequest = async (req, res) => {
       }
 
       validItems.push({
-        orderItemId: returnItem.orderItemId,
+        orderItemId: returnItem?.orderItemId,
         productId: orderItem.id,
         productName: orderItem.name,
         variantId: orderItem.variantId,
         variantName: orderItem.variantName,
-        quantity: returnItem.quantity,
+        quantity: returnItem?.quantity,
         originalPrice: orderItem.price,
         itemType: orderItem.itemType || 'product'
       });
