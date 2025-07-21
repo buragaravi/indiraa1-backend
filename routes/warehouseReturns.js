@@ -2,12 +2,16 @@ import express from 'express';
 import { authenticateSubAdmin } from '../middleware/auth.js';
 import {
   getAssignedReturns,
+  getUnassignedReturns,
+  reviewReturnRequest,
   updateReturnStatus,
   assignAgentForPickup,
   schedulePickup,
   markItemsReceived,
   completeQualityAssessment,
   submitRefundRecommendation,
+  makeFinalRefundDecision,
+  processRefund,
   getAssessmentHistory,
   getStatusHistory,
   bulkStatusUpdate
@@ -19,6 +23,12 @@ const router = express.Router();
 
 // Get Assigned Returns
 router.get('/assigned', authenticateSubAdmin, getAssignedReturns);
+
+// Get Unassigned Returns for Review
+router.get('/unassigned', authenticateSubAdmin, getUnassignedReturns);
+
+// Review Return Request (Approve/Reject)
+router.put('/:returnId/review', authenticateSubAdmin, reviewReturnRequest);
 
 // Update Return Status
 router.put('/:returnId/status', authenticateSubAdmin, updateReturnStatus);
@@ -41,6 +51,12 @@ router.put('/:returnId/assess', authenticateSubAdmin, completeQualityAssessment)
 
 // Submit Refund Recommendation
 router.post('/:returnId/recommend-refund', authenticateSubAdmin, submitRefundRecommendation);
+
+// Make Final Refund Decision
+router.put('/:returnId/final-decision', authenticateSubAdmin, makeFinalRefundDecision);
+
+// Process Refund
+router.post('/:returnId/process-refund', authenticateSubAdmin, processRefund);
 
 // History and Analytics
 

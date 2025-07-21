@@ -15,6 +15,7 @@ const transactionSchema = new mongoose.Schema({
       'VISIT_REWARD',      // Coins earned from referral visits
       'COIN_REDEMPTION',   // Coins spent/redeemed
       'REFUND',            // Coins credited from returns
+      'PICKUP_CHARGE',     // Coins deducted for pickup charges
       'MANUAL_ADJUSTMENT'  // Admin adjustments
     ],
     required: true

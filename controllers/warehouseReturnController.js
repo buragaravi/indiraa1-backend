@@ -1,5 +1,7 @@
 import Return from '../models/Return.js';
 import Order from '../models/Order.js';
+import User from '../models/User.js';
+import Transaction from '../models/Transaction.js';
 import DeliveryAgent from '../models/DeliveryAgent.js';
 import { 
   sendPickupAssignmentNotification,
@@ -99,6 +101,134 @@ export const getAssignedReturns = async (req, res) => {
   }
 };
 
+// Get Unassigned Returns for Review (for warehouse managers)
+export const getUnassignedReturns = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status = 'all' } = req.query;
+
+    // Query for returns that are in requested or admin_review status (available for warehouse manager approval)
+    const query = {
+      status: { $in: ['requested', 'admin_review'] }
+    };
+    
+    if (status !== 'all') {
+      query.status = status;
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const returns = await Return.find(query)
+      .populate('orderId', 'totalAmount status placedAt')
+      .populate('customerId', 'name email phone')
+      .sort({ requestedAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const totalReturns = await Return.countDocuments(query);
+    const totalPages = Math.ceil(totalReturns / parseInt(limit));
+
+    res.json({
+      success: true,
+      data: {
+        returns: returns,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: totalPages,
+          totalReturns: totalReturns,
+          limit: parseInt(limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching unassigned returns:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch unassigned returns',
+      error: error.message
+    });
+  }
+};
+
+// Review Return Request (warehouse managers can approve/reject like admins)
+export const reviewReturnRequest = async (req, res) => {
+  try {
+    const warehouseManagerId = req.user.id;
+    const { returnId } = req.params;
+    const { decision, comments, pickupCharge } = req.body;
+
+    const returnRequest = await Return.findById(returnId);
+    if (!returnRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Return request not found'
+      });
+    }
+
+    // Check if this return can be reviewed by warehouse manager
+    // Allow warehouse managers to review returns in requested or admin_review status
+    if (!['requested', 'admin_review'].includes(returnRequest.status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Return request cannot be reviewed at this stage'
+      });
+    }
+
+    // Update review information
+    returnRequest.warehouseManagement.reviewedBy = warehouseManagerId;
+    returnRequest.warehouseManagement.reviewedAt = new Date();
+    returnRequest.warehouseManagement.approved = decision === 'approve';
+    returnRequest.warehouseManagement.comments = comments;
+
+    // Update pickup charge if provided
+    if (pickupCharge) {
+      returnRequest.warehouseManagement.pickupCharge = {
+        isFree: pickupCharge.isFree,
+        amount: pickupCharge.isFree ? 0 : 50,
+        reason: pickupCharge.reason,
+        toggledBy: warehouseManagerId,
+        toggledAt: new Date()
+      };
+    }
+
+    if (decision === 'approve') {
+      // Update status - warehouse manager approval
+      returnRequest.updateStatus('approved', warehouseManagerId, 'Return request approved by warehouse manager');
+      returnRequest.updateStatus('warehouse_assigned', warehouseManagerId, 'Assigned to warehouse manager', true);
+      
+      // Assign to this warehouse manager
+      returnRequest.warehouseManagement.assignedManager = warehouseManagerId;
+      returnRequest.warehouseManagement.assignedAt = new Date();
+    } else {
+      // Reject the return
+      returnRequest.updateStatus('rejected', warehouseManagerId, comments || 'Return request rejected by warehouse manager');
+    }
+
+    await returnRequest.save();
+
+    // Send notifications
+    if (decision === 'approve') {
+      console.log(`Warehouse approval notification: Return ${returnRequest.returnRequestId} approved by warehouse manager ${warehouseManagerId}`);
+    } else {
+      console.log(`Warehouse rejection notification: Return ${returnRequest.returnRequestId} rejected by warehouse manager ${warehouseManagerId}`);
+    }
+
+    res.json({
+      success: true,
+      message: `Return request ${decision === 'approve' ? 'approved' : 'rejected'} successfully`,
+      data: { returnRequest }
+    });
+
+  } catch (error) {
+    console.error('Error reviewing return request:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to review return request',
+      error: error.message
+    });
+  }
+};
+
 // Update Return Status
 export const updateReturnStatus = async (req, res) => {
   try {
@@ -115,12 +245,13 @@ export const updateReturnStatus = async (req, res) => {
     }
 
     // Check if warehouse manager owns this return
-    if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized: Return not assigned to you'
-      });
-    }
+    // Removed assignedManager check - warehouse managers can work on any returns
+    // if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     message: 'Unauthorized: Return not assigned to you'
+    //   });
+    // }
 
     // Validate status transition
     const validTransitions = {
@@ -308,13 +439,14 @@ export const schedulePickup = async (req, res) => {
       });
     }
 
-    // Check ownership
-    if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized: Return not assigned to you'
-      });
-    }
+    // Check ownership - removed assignedManager check
+    // Warehouse managers can now work on any returns
+    // if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     message: 'Unauthorized: Return not assigned to you'
+    //   });
+    // }
 
     // Validate method
     const validMethods = ['agent_assigned', 'direct_warehouse', 'customer_dropoff'];
@@ -343,23 +475,22 @@ export const schedulePickup = async (req, res) => {
       }
     }
 
-    // Update pickup details
-    const pickupDetails = {
-      method: method,
-      scheduledDate: scheduledDate ? new Date(scheduledDate) : null,
-      scheduledSlot: scheduledSlot,
-      pickupNotes: notes || '',
-      pickupStatus: 'scheduled'
-    };
+    // Update pickup details using set method to avoid validation issues
+    returnRequest.set('warehouseManagement.pickup.method', method);
+    returnRequest.set('warehouseManagement.pickup.pickupStatus', 'scheduled');
+    returnRequest.set('warehouseManagement.pickup.pickupNotes', notes || '');
 
-    if (method === 'agent_assigned' && agentId) {
-      pickupDetails.assignedAgent = agentId;
+    if (scheduledDate) {
+      returnRequest.set('warehouseManagement.pickup.scheduledDate', new Date(scheduledDate));
     }
 
-    returnRequest.warehouseManagement.pickup = {
-      ...returnRequest.warehouseManagement.pickup,
-      ...pickupDetails
-    };
+    if (scheduledSlot) {
+      returnRequest.set('warehouseManagement.pickup.scheduledSlot', scheduledSlot);
+    }
+
+    if (method === 'agent_assigned' && agentId) {
+      returnRequest.set('warehouseManagement.pickup.assignedAgent', agentId);
+    }
 
     // Update status
     returnRequest.updateStatus('pickup_scheduled', warehouseManagerId, `Pickup scheduled via ${method}`);
@@ -398,13 +529,14 @@ export const markItemsReceived = async (req, res) => {
       });
     }
 
-    // Check ownership
-    if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized: Return not assigned to you'
-      });
-    }
+    // Check ownership - removed assignedManager check
+    // Warehouse managers can now work on any returns
+    // if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     message: 'Unauthorized: Return not assigned to you'
+    //   });
+    // }
 
     // Check status
     if (returnRequest.status !== 'picked_up') {
@@ -414,14 +546,31 @@ export const markItemsReceived = async (req, res) => {
       });
     }
 
-    // Update quality assessment with receipt details
-    returnRequest.warehouseManagement.qualityAssessment = {
-      ...returnRequest.warehouseManagement.qualityAssessment,
-      receivedAt: receivedAt ? new Date(receivedAt) : new Date(),
-      initialCondition: condition,
-      receivedNotes: notes,
-      receivedImages: receivedImages
-    };
+    // Update quality assessment with receipt details - avoid spreading undefined values
+    const currentQualityAssessment = returnRequest.warehouseManagement.qualityAssessment || {};
+    
+    // Only set the specific fields we're updating
+    returnRequest.set('warehouseManagement.qualityAssessment.receivedAt', receivedAt ? new Date(receivedAt) : new Date());
+    returnRequest.set('warehouseManagement.qualityAssessment.initialCondition', condition);
+    returnRequest.set('warehouseManagement.qualityAssessment.receivedNotes', notes);
+    returnRequest.set('warehouseManagement.qualityAssessment.receivedImages', receivedImages);
+
+    // Preserve existing assessment data if it exists
+    if (currentQualityAssessment.assessedAt) {
+      returnRequest.set('warehouseManagement.qualityAssessment.assessedAt', currentQualityAssessment.assessedAt);
+    }
+    if (currentQualityAssessment.itemCondition) {
+      returnRequest.set('warehouseManagement.qualityAssessment.itemCondition', currentQualityAssessment.itemCondition);
+    }
+    if (currentQualityAssessment.refundEligibility) {
+      returnRequest.set('warehouseManagement.qualityAssessment.refundEligibility', currentQualityAssessment.refundEligibility);
+    }
+    if (currentQualityAssessment.refundPercentage) {
+      returnRequest.set('warehouseManagement.qualityAssessment.refundPercentage', currentQualityAssessment.refundPercentage);
+    }
+    if (currentQualityAssessment.warehouseNotes) {
+      returnRequest.set('warehouseManagement.qualityAssessment.warehouseNotes', currentQualityAssessment.warehouseNotes);
+    }
 
     // Update status
     returnRequest.updateStatus('in_warehouse', warehouseManagerId, notes || 'Items received at warehouse');
@@ -468,13 +617,14 @@ export const completeQualityAssessment = async (req, res) => {
       });
     }
 
-    // Check ownership
-    if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized: Return not assigned to you'
-      });
-    }
+    // Check ownership - removed assignedManager check
+    // Warehouse managers can now work on any returns  
+    // if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     message: 'Unauthorized: Return not assigned to you'
+    //   });
+    // }
 
     // Check status
     if (returnRequest.status !== 'in_warehouse') {
@@ -509,18 +659,40 @@ export const completeQualityAssessment = async (req, res) => {
       });
     }
 
-    // Complete quality assessment
-    returnRequest.warehouseManagement.qualityAssessment = {
-      ...returnRequest.warehouseManagement.qualityAssessment,
-      assessedAt: new Date(),
-      itemCondition: itemCondition,
-      refundEligibility: refundEligibility,
-      refundPercentage: refundPercentage,
-      warehouseNotes: warehouseNotes,
-      qualityImages: qualityImages,
-      conditionDetails: conditionDetails,
-      restockDecision: restockDecision
-    };
+    // Complete quality assessment - avoid spreading undefined values
+    const currentQualityAssessment = returnRequest.warehouseManagement.qualityAssessment || {};
+    
+    // Set the specific fields we're updating
+    returnRequest.set('warehouseManagement.qualityAssessment.assessedAt', new Date());
+    returnRequest.set('warehouseManagement.qualityAssessment.itemCondition', itemCondition);
+    returnRequest.set('warehouseManagement.qualityAssessment.refundEligibility', refundEligibility);
+    returnRequest.set('warehouseManagement.qualityAssessment.refundPercentage', refundPercentage);
+    returnRequest.set('warehouseManagement.qualityAssessment.warehouseNotes', warehouseNotes);
+    returnRequest.set('warehouseManagement.qualityAssessment.qualityImages', qualityImages);
+    
+    // Set conditionDetails object if provided
+    if (conditionDetails && typeof conditionDetails === 'object') {
+      returnRequest.set('warehouseManagement.qualityAssessment.conditionDetails', conditionDetails);
+    }
+    
+    // Set restockDecision object if provided
+    if (restockDecision && typeof restockDecision === 'object') {
+      returnRequest.set('warehouseManagement.qualityAssessment.restockDecision', restockDecision);
+    }
+
+    // Preserve existing assessment data if it exists
+    if (currentQualityAssessment.receivedAt) {
+      returnRequest.set('warehouseManagement.qualityAssessment.receivedAt', currentQualityAssessment.receivedAt);
+    }
+    if (currentQualityAssessment.initialCondition) {
+      returnRequest.set('warehouseManagement.qualityAssessment.initialCondition', currentQualityAssessment.initialCondition);
+    }
+    if (currentQualityAssessment.receivedNotes) {
+      returnRequest.set('warehouseManagement.qualityAssessment.receivedNotes', currentQualityAssessment.receivedNotes);
+    }
+    if (currentQualityAssessment.receivedImages) {
+      returnRequest.set('warehouseManagement.qualityAssessment.receivedImages', currentQualityAssessment.receivedImages);
+    }
 
     // Update status
     returnRequest.updateStatus('quality_checked', warehouseManagerId, 'Quality assessment completed');
@@ -633,6 +805,386 @@ export const submitRefundRecommendation = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to submit refund recommendation',
+      error: error.message
+    });
+  }
+};
+
+// Make Final Refund Decision (same as admin functionality)
+export const makeFinalRefundDecision = async (req, res) => {
+  try {
+    const warehouseManagerId = req.user.id;
+    const { returnId } = req.params;
+    const { decision, finalAmount, deductions = [], adminNotes } = req.body;
+
+    const returnRequest = await Return.findById(returnId)
+      .populate('customerId', 'name email wallet')
+      .populate('orderId', 'totalAmount');
+
+    if (!returnRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Return request not found'
+      });
+    }
+
+    // Check if warehouse manager owns this return  
+    // Removed assignedManager check - warehouse managers can now work on any returns
+    // if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     message: 'Unauthorized: Return not assigned to you'
+    //   });
+    // }
+
+    // Check if quality assessment completed
+    if (!returnRequest.warehouseManagement.qualityAssessment?.assessedAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Quality assessment must be completed before final decision'
+      });
+    }
+
+    const originalRefund = returnRequest.calculateRefund();
+    console.log(`Original refund calculation:`, originalRefund);
+    
+    let calculatedFinalAmount = finalAmount;
+    if (!calculatedFinalAmount) {
+      const refundPercentage = returnRequest.warehouseManagement.qualityAssessment.refundPercentage;
+      console.log(`Using refund percentage from quality assessment: ${refundPercentage}%`);
+      
+      if (isNaN(refundPercentage) || refundPercentage === undefined || refundPercentage === null) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid refund percentage in quality assessment'
+        });
+      }
+      calculatedFinalAmount = originalRefund.refundAmount * (refundPercentage / 100);
+      console.log(`Calculated final amount: ${calculatedFinalAmount} (${refundPercentage}% of ${originalRefund.refundAmount})`);
+    }
+    
+    // Validate calculated final amount
+    if (isNaN(calculatedFinalAmount)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Error calculating final refund amount'
+      });
+    }
+
+    // Apply deductions (including pickup charges)
+    const totalDeductions = deductions.reduce((sum, deduction) => {
+      const amount = Number(deduction.amount || 0);
+      return sum + (isNaN(amount) ? 0 : amount);
+    }, 0);
+    
+    // Add pickup charge if applicable
+    let pickupChargeAmount = 0;
+    const pickupCharge = returnRequest.adminReview?.pickupCharge || returnRequest.warehouseManagement?.pickupCharge;
+    
+    if (pickupCharge && !pickupCharge.isFree) {
+      pickupChargeAmount = Number(pickupCharge.amount || 50); // Default 50 rupees
+      if (isNaN(pickupChargeAmount)) {
+        pickupChargeAmount = 50; // Fallback to default
+      }
+      deductions.push({
+        type: 'pickup_charge',
+        amount: pickupChargeAmount,
+        reason: pickupCharge.reason || 'Return pickup charge',
+        calculatedAt: new Date()
+      });
+    }
+    
+    const finalDeductions = totalDeductions + pickupChargeAmount;
+    const finalRefundAmount = Math.max(0, calculatedFinalAmount - finalDeductions);
+    const finalCoins = finalRefundAmount * 5; // 1 Rupee = 5 Coins
+
+    console.log(`Final refund calculation:
+      - Calculated Amount: ${calculatedFinalAmount}
+      - Total Deductions: ${totalDeductions}
+      - Pickup Charge: ${pickupChargeAmount}
+      - Final Deductions: ${finalDeductions}
+      - Final Refund Amount: ${finalRefundAmount}
+      - Final Coins: ${finalCoins}
+    `);
+
+    // Validate final calculations
+    if (isNaN(finalRefundAmount) || isNaN(finalCoins)) {
+      console.error('Invalid final calculations:', {
+        calculatedFinalAmount,
+        totalDeductions,
+        pickupChargeAmount,
+        finalRefundAmount,
+        finalCoins
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Error in final refund calculations. Please check all input values.'
+      });
+    }
+
+    // Update refund decision using the official schema field
+    returnRequest.refund.adminDecision = {
+      decision: decision,
+      finalAmount: finalRefundAmount,
+      finalCoins: finalCoins,
+      adminNotes: adminNotes,
+      decidedAt: new Date(),
+      decidedBy: warehouseManagerId,
+      deductions: deductions.map(d => ({
+        ...d,
+        calculatedAt: d.calculatedAt || new Date()
+      }))
+    };
+
+    if (decision === 'approved') {
+      returnRequest.updateStatus('refund_approved', warehouseManagerId, 'Refund approved by warehouse manager');
+    } else {
+      returnRequest.updateStatus('rejected', warehouseManagerId, 'Refund rejected by warehouse manager');
+    }
+
+    await returnRequest.save();
+
+    // Calculate refund breakdown
+    const refundCalculation = {
+      originalAmount: originalRefund.originalAmount,
+      warehouseRecommendation: returnRequest.refund.warehouseRecommendation?.recommendedAmount,
+      totalDeductions: finalDeductions,
+      pickupCharge: pickupChargeAmount,
+      finalRefundAmount: finalRefundAmount,
+      finalCoins: finalCoins,
+      deductions: deductions
+    };
+
+    res.json({
+      success: true,
+      data: {
+        return: returnRequest,
+        refundCalculation: refundCalculation
+      }
+    });
+
+  } catch (error) {
+    console.error('Error making final refund decision:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to make final refund decision',
+      error: error.message
+    });
+  }
+};
+
+// Process Refund (same as admin functionality)
+export const processRefund = async (req, res) => {
+  try {
+    const warehouseManagerId = req.user.id;
+    const { returnId } = req.params;
+
+    const returnRequest = await Return.findById(returnId)
+      .populate('customerId', 'name email wallet')
+      .populate('orderId', 'totalAmount');
+
+    if (!returnRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Return request not found'
+      });
+    }
+
+    // Check if warehouse manager owns this return
+    // Removed assignedManager check - warehouse managers can now work on any returns
+    // if (returnRequest.warehouseManagement.assignedManager.toString() !== warehouseManagerId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     message: 'Unauthorized: Return not assigned to you'
+    //   });
+    // }
+
+    // Check if refund is approved
+    if (returnRequest.status !== 'refund_approved') {
+      return res.status(400).json({
+        success: false,
+        message: 'Refund must be approved before processing'
+      });
+    }
+
+    // Check if already processed
+    if (returnRequest.refund.processing?.processingStatus === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Refund has already been processed'
+      });
+    }
+
+    // Check if refund decision exists
+    if (!returnRequest.refund.adminDecision) {
+      return res.status(400).json({
+        success: false,
+        message: 'No refund decision found. Please complete the final refund decision first.'
+      });
+    }
+
+    let finalCoins = returnRequest.refund.adminDecision.finalCoins;
+    let finalAmount = returnRequest.refund.adminDecision.finalAmount;
+    const user = returnRequest.customerId;
+    
+    // Auto-calculate finalCoins if not present or invalid
+    if (isNaN(finalCoins) || finalCoins === undefined || finalCoins === null) {
+      console.log('finalCoins not found or invalid, calculating based on order value...');
+      
+      // If finalAmount exists, convert it to coins
+      if (finalAmount && !isNaN(finalAmount)) {
+        finalCoins = finalAmount * 5; // 1 Rupee = 5 Coins
+        console.log(`Calculated finalCoins from finalAmount: ${finalAmount} -> ${finalCoins} coins`);
+      } else {
+        // Calculate from original order value and quality assessment
+        const originalRefund = returnRequest.calculateRefund();
+        const refundPercentage = returnRequest.warehouseManagement.qualityAssessment?.refundPercentage || 100;
+        
+        // Calculate base refund amount
+        let baseRefundAmount = originalRefund.refundAmount * (refundPercentage / 100);
+        
+        // Apply deductions
+        const deductions = returnRequest.refund.adminDecision.deductions || [];
+        const totalDeductions = deductions.reduce((sum, deduction) => {
+          const amount = Number(deduction.amount || 0);
+          return sum + (isNaN(amount) ? 0 : amount);
+        }, 0);
+        
+        finalAmount = Math.max(0, baseRefundAmount - totalDeductions);
+        finalCoins = finalAmount * 5; // Convert to coins
+        
+        console.log(`Auto-calculated refund: Original=${originalRefund.originalAmount}, Percentage=${refundPercentage}%, Deductions=${totalDeductions}, Final=${finalAmount}, Coins=${finalCoins}`);
+        
+        // Update the adminDecision with calculated values
+        returnRequest.refund.adminDecision.finalAmount = finalAmount;
+        returnRequest.refund.adminDecision.finalCoins = finalCoins;
+        await returnRequest.save();
+      }
+    }
+    
+    // Final validation after calculation
+    if (isNaN(finalCoins) || finalCoins === undefined || finalCoins === null) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unable to calculate valid refund amount. Please check the return data.'
+      });
+    }
+    
+    if (isNaN(finalAmount) || finalAmount === undefined || finalAmount === null) {
+      // If finalAmount is still invalid, calculate from finalCoins
+      finalAmount = finalCoins / 5;
+    }
+    
+    // Check for pickup charges - they should already be deducted from finalCoins
+    const deductions = returnRequest.refund.adminDecision.deductions || [];
+    const pickupChargeDeduction = deductions.find(d => d.type === 'pickup_charge');
+    let pickupChargeTransactionId = null;
+    
+    console.log(`Processing refund: ${finalCoins} coins to be credited`);
+    if (pickupChargeDeduction) {
+      console.log(`Pickup charge found: ${pickupChargeDeduction.amount} rupees (already deducted from finalCoins)`);
+    }
+    
+    // The finalCoins already has pickup charges deducted, so we just credit the final amount
+    // No need to deduct pickup charges separately from wallet
+
+    // Update user wallet balance with refund
+    const userRecord = await User.findById(user._id);
+    if (!userRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Ensure wallet exists and has valid balance
+    const currentBalance = Number(userRecord.wallet?.balance || 0);
+    const totalEarned = Number(userRecord.wallet?.totalEarned || 0);
+    
+    // Validate current balance is a number
+    if (isNaN(currentBalance)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid current wallet balance'
+      });
+    }
+    
+    const newWalletBalance = currentBalance + finalCoins;
+    const newTotalEarned = totalEarned + finalCoins;
+    
+    // Validate new balances are numbers
+    if (isNaN(newWalletBalance) || isNaN(newTotalEarned)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Error calculating new wallet balance'
+      });
+    }
+    
+    await User.findByIdAndUpdate(user._id, {
+      'wallet.balance': newWalletBalance,
+      'wallet.totalEarned': newTotalEarned
+    });
+
+    // Create wallet transaction
+    const transaction = new Transaction({
+      userId: user._id,
+      type: 'REFUND',
+      amount: finalCoins,
+      description: `Refund for return request ${returnRequest.returnRequestId}`,
+      orderId: returnRequest.orderId._id,
+      returnId: returnRequest._id,
+      balanceAfter: newWalletBalance,
+      metadata: {
+        refundDetails: {
+          originalAmount: returnRequest.calculateRefund().originalAmount,
+          refundAmount: finalAmount,
+          conversionRate: 5,
+          deductions: returnRequest.refund.adminDecision.deductions,
+          pickupChargeIncluded: pickupChargeDeduction ? true : false,
+          pickupChargeAmount: pickupChargeDeduction ? pickupChargeDeduction.amount : 0,
+          processedBy: warehouseManagerId,
+          returnReason: returnRequest.returnReason
+        }
+      },
+      status: 'COMPLETED'
+    });
+
+    await transaction.save();
+
+    // Update return processing details
+    returnRequest.refund.processing = {
+      processedBy: warehouseManagerId,
+      processedAt: new Date(),
+      walletTransactionId: transaction._id,
+      pickupChargeTransactionId: pickupChargeTransactionId,
+      coinsCredited: finalCoins,
+      originalAmount: returnRequest.calculateRefund().originalAmount,
+      processingStatus: 'completed'
+    };
+
+    // Mark return as completed
+    returnRequest.updateStatus('refund_processed', warehouseManagerId, 'Refund processed successfully', true);
+    returnRequest.updateStatus('completed', warehouseManagerId, 'Return process completed', true);
+    returnRequest.completedAt = new Date();
+
+    await returnRequest.save();
+
+    res.json({
+      success: true,
+      message: 'Refund processed successfully',
+      data: {
+        finalCoins: finalCoins,
+        newWalletBalance: newWalletBalance,
+        transactionId: transaction._id,
+        pickupChargeTransactionId: pickupChargeTransactionId
+      }
+    });
+
+  } catch (error) {
+    console.error('Error processing refund:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process refund',
       error: error.message
     });
   }

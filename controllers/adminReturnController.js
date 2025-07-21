@@ -193,7 +193,7 @@ export const reviewReturnRequest = async (req, res) => {
   try {
     const adminId = req.user.id;
     const { returnId } = req.params;
-    const { decision, adminComments, assignToWarehouse, pickupCharge } = req.body;
+    const { decision, adminComments, pickupCharge } = req.body;
 
     const returnRequest = await Return.findById(returnId);
     if (!returnRequest) {
@@ -229,24 +229,12 @@ export const reviewReturnRequest = async (req, res) => {
     }
 
     if (decision === 'approve') {
-      if (!assignToWarehouse) {
-        return res.status(400).json({
-          success: false,
-          message: 'Warehouse manager assignment is required for approval'
-        });
-      }
-
-      // Assign to warehouse manager
-      returnRequest.adminReview.assignedToWarehouse = assignToWarehouse;
-      returnRequest.warehouseManagement.assignedManager = assignToWarehouse;
-      returnRequest.warehouseManagement.assignedAt = new Date();
-
-      // Update status
+      // Update status - no warehouse manager assignment needed
       returnRequest.updateStatus('approved', adminId, 'Return request approved by admin');
-      returnRequest.updateStatus('warehouse_assigned', adminId, 'Assigned to warehouse manager', true);
 
-      // Send notification to warehouse manager
-      console.log(`Warehouse assignment notification: Return ${returnRequest.returnRequestId} assigned to warehouse manager ${assignToWarehouse}`);
+
+      // Send notification
+      console.log(`Return approval notification: Return ${returnRequest.returnRequestId} approved by admin`);
     } else {
       // Reject the return
       returnRequest.updateStatus('rejected', adminId, adminComments || 'Return request rejected');
@@ -406,9 +394,25 @@ export const makeFinalRefundDecision = async (req, res) => {
       calculatedFinalAmount = returnRequest.refund?.warehouseRecommendation?.recommendedAmount || originalRefund.refundAmount;
     }
 
-    // Apply deductions
+    // Apply deductions (including pickup charges)
     const totalDeductions = deductions.reduce((sum, deduction) => sum + deduction.amount, 0);
-    const finalRefundAmount = Math.max(0, calculatedFinalAmount - totalDeductions);
+    
+    // Add pickup charge if applicable
+    let pickupChargeAmount = 0;
+    const pickupCharge = returnRequest.adminReview?.pickupCharge || returnRequest.warehouseManagement?.pickupCharge;
+    
+    if (pickupCharge && !pickupCharge.isFree) {
+      pickupChargeAmount = pickupCharge.amount || 50; // Default 50 rupees
+      deductions.push({
+        type: 'pickup_charge',
+        amount: pickupChargeAmount,
+        reason: pickupCharge.reason || 'Return pickup charge',
+        calculatedAt: new Date()
+      });
+    }
+    
+    const finalDeductions = totalDeductions + pickupChargeAmount;
+    const finalRefundAmount = Math.max(0, calculatedFinalAmount - finalDeductions);
     const finalCoins = finalRefundAmount * 5; // 1 Rupee = 5 Coins
 
     // Update refund decision
@@ -421,7 +425,7 @@ export const makeFinalRefundDecision = async (req, res) => {
       decidedBy: adminId,
       deductions: deductions.map(d => ({
         ...d,
-        calculatedAt: new Date()
+        calculatedAt: d.calculatedAt || new Date()
       }))
     };
 
@@ -437,7 +441,8 @@ export const makeFinalRefundDecision = async (req, res) => {
     const refundCalculation = {
       originalAmount: originalRefund.originalAmount,
       warehouseRecommendation: returnRequest.refund.warehouseRecommendation?.recommendedAmount,
-      totalDeductions: totalDeductions,
+      totalDeductions: finalDeductions,
+      pickupCharge: pickupChargeAmount,
       finalRefundAmount: finalRefundAmount,
       finalCoins: finalCoins,
       deductions: deductions
@@ -491,15 +496,77 @@ export const processCoinRefund = async (req, res) => {
       });
     }
 
-    const finalCoins = returnRequest.refund.adminDecision.finalCoins;
-    const finalAmount = returnRequest.refund.adminDecision.finalAmount;
+    let finalCoins = returnRequest.refund.adminDecision.finalCoins;
+    let finalAmount = returnRequest.refund.adminDecision.finalAmount;
+    
+    // Auto-calculate finalCoins if not present or invalid
+    if (isNaN(finalCoins) || finalCoins === undefined || finalCoins === null) {
+      console.log('finalCoins not found or invalid, calculating based on order value...');
+      
+      // If finalAmount exists, convert it to coins
+      if (finalAmount && !isNaN(finalAmount)) {
+        finalCoins = finalAmount * 5; // 1 Rupee = 5 Coins
+        console.log(`Calculated finalCoins from finalAmount: ${finalAmount} -> ${finalCoins} coins`);
+      } else {
+        // Calculate from original order value and quality assessment
+        const originalRefund = returnRequest.calculateRefund();
+        const refundPercentage = returnRequest.warehouseManagement.qualityAssessment?.refundPercentage || 100;
+        
+        // Calculate base refund amount
+        let baseRefundAmount = originalRefund.refundAmount * (refundPercentage / 100);
+        
+        // Apply deductions
+        const deductions = returnRequest.refund.adminDecision.deductions || [];
+        const totalDeductions = deductions.reduce((sum, deduction) => {
+          const amount = Number(deduction.amount || 0);
+          return sum + (isNaN(amount) ? 0 : amount);
+        }, 0);
+        
+        finalAmount = Math.max(0, baseRefundAmount - totalDeductions);
+        finalCoins = finalAmount * 5; // Convert to coins
+        
+        console.log(`Auto-calculated refund: Original=${originalRefund.originalAmount}, Percentage=${refundPercentage}%, Deductions=${totalDeductions}, Final=${finalAmount}, Coins=${finalCoins}`);
+        
+        // Update the adminDecision with calculated values
+        returnRequest.refund.adminDecision.finalAmount = finalAmount;
+        returnRequest.refund.adminDecision.finalCoins = finalCoins;
+        await returnRequest.save();
+      }
+    }
+    
+    // Final validation after calculation
+    if (isNaN(finalCoins) || finalCoins === undefined || finalCoins === null) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unable to calculate valid refund amount. Please check the return data.'
+      });
+    }
+    
+    if (isNaN(finalAmount) || finalAmount === undefined || finalAmount === null) {
+      // If finalAmount is still invalid, calculate from finalCoins
+      finalAmount = finalCoins / 5;
+    }
+    
+    // Check for pickup charges - they should already be deducted from finalCoins
+    const deductions = returnRequest.refund.adminDecision.deductions || [];
+    const pickupChargeDeduction = deductions.find(d => d.type === 'pickup_charge');
+    let pickupChargeTransactionId = null;
+    
+    console.log(`Processing refund: ${finalCoins} coins to be credited`);
+    if (pickupChargeDeduction) {
+      console.log(`Pickup charge found: ${pickupChargeDeduction.amount} rupees (already deducted from finalCoins)`);
+    }
+    
+    // The finalCoins already has pickup charges deducted, so we just credit the final amount
+    // No need to deduct pickup charges separately from wallet
 
-    // Update user wallet balance
-    const user = returnRequest.customerId;
-    const newWalletBalance = (user.walletBalance || 0) + finalCoins;
+    // Update user wallet balance with refund
+    const currentBalance = (await User.findById(user._id)).wallet?.balance || 0;
+    const newWalletBalance = currentBalance + finalCoins;
     
     await User.findByIdAndUpdate(user._id, {
-      walletBalance: newWalletBalance
+      'wallet.balance': newWalletBalance,
+      'wallet.totalEarned': (user.wallet?.totalEarned || 0) + finalCoins
     });
 
     // Create wallet transaction
@@ -531,9 +598,9 @@ export const processCoinRefund = async (req, res) => {
       processedBy: adminId,
       processedAt: new Date(),
       walletTransactionId: transaction._id,
-      conversionRate: 5,
-      originalAmount: finalAmount,
+      pickupChargeTransactionId: pickupChargeTransactionId,
       coinsCredited: finalCoins,
+      originalAmount: returnRequest.calculateRefund().originalAmount,
       processingStatus: 'completed'
     };
 
