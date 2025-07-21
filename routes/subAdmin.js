@@ -29,7 +29,7 @@ router.put('/:id', authenticateAdmin, updateSubAdmin);
 router.delete('/:id', authenticateAdmin, deleteSubAdmin);
 
 // Dashboard routes (placeholder for role-based dashboards)
-router.get('/warehouse-manager/dashboard', authenticateSubAdmin, (req, res) => {
+router.get('/warehouse_manager/dashboard', authenticateSubAdmin, (req, res) => {
   if (req.subAdmin.role !== 'warehouse_manager') {
     return res.status(403).json({
       success: false,
