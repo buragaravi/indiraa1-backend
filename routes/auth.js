@@ -250,7 +250,7 @@ router.put('/me', async (req, res) => {
 const addUserAddress = async (req, res) => {
   try {
     const { name, address, phone, isDefault = false } = req.body;
-    const userId = req.userId;
+    const userId = req.userId || req.user._id || req.user.id; // Get user ID from authenticated request
 
     // Validation
     if (!name || !address || !phone) {

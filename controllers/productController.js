@@ -1663,7 +1663,8 @@ export const clearCart = async (req, res) => {
 export const updateCartItem = async (req, res) => {
   try {
     console.log('Updating cart item for user:', req.user.id);
-    console.log('Request body:', req.body);    const { productId, qty, variantId, comboPackId, type } = req.body;
+    console.log('Request body:', req.body);
+    const { productId, quantity: qty, variantId, comboPackId, type, qty:quantity } = req.body;
     if (!qty || qty < 1) {
       console.error('Invalid quantity:', qty);
       return res.status(400).json({ message: 'Invalid quantity.' });
@@ -2629,5 +2630,130 @@ export const getAverageOrderRating = async (req, res) => {
   } catch (error) {
     console.error('[GET AVERAGE ORDER RATING] Error:', error);
     res.status(500).json({ message: 'Failed to fetch average rating.' });
+  }
+};
+
+// Get all categories
+export const getCategories = async (req, res) => {
+  try {
+    const categories = await Product.distinct('category');
+    
+    // Remove empty or null categories and sort alphabetically
+    const validCategories = categories
+      .filter(category => category && category.trim().length > 0)
+      .sort((a, b) => a.localeCompare(b));
+    
+    res.json({ 
+      success: true, 
+      categories: validCategories,
+      count: validCategories.length 
+    });
+  } catch (error) {
+    console.error('[GET CATEGORIES] Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch categories' 
+    });
+  }
+};
+
+// Get products by category
+export const getProductsByCategory = async (req, res) => {
+  try {
+    const { category } = req.params;
+    const { 
+      page = 1, 
+      limit = 20, 
+      sort = 'name',
+      minPrice,
+      maxPrice,
+      search 
+    } = req.query;
+
+    if (!category) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Category parameter is required' 
+      });
+    }
+
+    // Build query
+    let query = { 
+      category: { $regex: new RegExp(category, 'i') },
+      isActive: true 
+    };
+
+    // Add price filters if provided
+    if (minPrice || maxPrice) {
+      query.price = {};
+      if (minPrice) query.price.$gte = parseFloat(minPrice);
+      if (maxPrice) query.price.$lte = parseFloat(maxPrice);
+    }
+
+    // Add search filter if provided
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { name: searchRegex },
+        { description: searchRegex }
+      ];
+    }
+
+    // Build sort object
+    let sortObject = {};
+    switch (sort) {
+      case 'price-asc':
+        sortObject = { price: 1 };
+        break;
+      case 'price-desc':
+        sortObject = { price: -1 };
+        break;
+      case 'rating':
+        sortObject = { 'ratings.average': -1 };
+        break;
+      case 'newest':
+        sortObject = { createdAt: -1 };
+        break;
+      default:
+        sortObject = { name: 1 };
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const [products, totalProducts] = await Promise.all([
+      Product.find(query)
+        .select('name description price category images image stock ratings')
+        .sort(sortObject)
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Product.countDocuments(query)
+    ]);
+
+    const totalPages = Math.ceil(totalProducts / parseInt(limit));
+
+    res.json({
+      success: true,
+      products,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalProducts,
+        hasNextPage: parseInt(page) < totalPages,
+        hasPrevPage: parseInt(page) > 1
+      },
+      filters: {
+        category,
+        sort,
+        minPrice,
+        maxPrice,
+        search
+      }
+    });
+  } catch (error) {
+    console.error('[GET PRODUCTS BY CATEGORY] Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch products by category' 
+    });
   }
 };
