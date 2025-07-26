@@ -1,7 +1,12 @@
 import express from 'express';
 import multer from 'multer';
 import * as productController from '../controllers/productController.js';
-import { addOrderReview, getAverageOrderRating } from '../controllers/productController.js';
+import { 
+  addOrderReview, 
+  getAverageOrderRating, 
+  getCategories, 
+  getProductsByCategory 
+} from '../controllers/productController.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { authenticateAdminOrSubAdmin } from '../middleware/authUnified.js';
 
@@ -18,6 +23,8 @@ router.put('/:id/featured', authenticateAdminOrSubAdmin, productController.toggl
 // Product listing/detail (public)
 router.get('/', productController.getAllProducts);
 router.get('/featured', productController.getFeaturedProducts);
+router.get('/categories', getCategories);
+router.get('/categories/:category', getProductsByCategory);
 router.get('/:id', productController.getProductById);
 
 // Reviews (user)
