@@ -445,65 +445,120 @@ const getDefaultLimitedPermissions = () => {
     products: {
       enabled: true,
       actions: {
-        view: { enabled: true },
-        create: { enabled: false },
-        edit: { enabled: false },
-        delete: { enabled: false },
-        bulk_upload: { enabled: false }
+        view: true,
+        create: false,
+        edit: false,
+        delete: false,
+        bulk_upload: false,
+        activate: false,
+        deactivate: false,
+        export: false
       }
     },
     orders: {
       enabled: true,
       actions: {
-        view: { enabled: true },
-        create: { enabled: false },
-        edit: { enabled: false },
-        delete: { enabled: false },
-        export: { enabled: false }
+        view: true,
+        create: false,
+        edit: false,
+        delete: false,
+        export: false,
+        mark_paid: false,
+        update_status: false,
+        cancel: false,
+        refund: false
       }
     },
     users: {
       enabled: false,
       actions: {
-        view: { enabled: false },
-        create: { enabled: false },
-        edit: { enabled: false },
-        delete: { enabled: false },
-        export: { enabled: false }
+        view: false,
+        create: false,
+        edit: false,
+        delete: false,
+        export: false,
+        activate: false,
+        deactivate: false
       }
     },
     banners: {
       enabled: false,
       actions: {
-        view: { enabled: false },
-        create: { enabled: false },
-        edit: { enabled: false },
-        delete: { enabled: false }
+        view: false,
+        create: false,
+        edit: false,
+        delete: false,
+        activate: false,
+        deactivate: false,
+        reorder: false,
+        schedule: false
+      }
+    },
+    coupons: {
+      enabled: false,
+      actions: {
+        view: false,
+        create: false,
+        edit: false,
+        delete: false,
+        activate: false,
+        deactivate: false,
+        export: false
       }
     },
     categories: {
       enabled: false,
       actions: {
-        view: { enabled: false },
-        create: { enabled: false },
-        edit: { enabled: false },
-        delete: { enabled: false }
+        view: false,
+        create: false,
+        edit: false,
+        delete: false,
+        reorder: false
+      }
+    },
+    inventory: {
+      enabled: false,
+      actions: {
+        view: false,
+        create: false,
+        edit: false,
+        delete: false,
+        batch_create: false,
+        batch_edit: false,
+        export: false
+      }
+    },
+    returns: {
+      enabled: false,
+      actions: {
+        view: false,
+        process: false,
+        approve: false,
+        reject: false,
+        refund: false,
+        export: false
       }
     },
     analytics: {
       enabled: false,
       actions: {
-        view: { enabled: false },
-        export: { enabled: false }
+        view: false,
+        export: false,
+        revenue: false,
+        sales: false,
+        users: false,
+        products: false
       }
     },
     sub_admins: {
       enabled: false,
       actions: {
-        view: { enabled: false },
-        create: { enabled: false },
-        edit: { enabled: false },
-        delete: { enabled: false }
+        view: false,
+        create: false,
+        edit: false,
+        delete: false,
+        activate: false,
+        deactivate: false
       }
     }
   };
