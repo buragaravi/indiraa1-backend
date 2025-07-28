@@ -42,7 +42,7 @@ const s3 = new AWS.S3({
 const BUCKET = process.env.AWS_S3_BUCKET;
 
 // Default image URL for products without images
-const DEFAULT_PRODUCT_IMAGE = 'https://bannu-bkt.s3.amazonaws.com/Mango%20Smoothie/1752648479371.png';
+const DEFAULT_PRODUCT_IMAGE = 'https://bannu-bkt.s3.amazonaws.com/Chicken/1753679077255.jpg';
 
 // Upload a single image buffer to S3
 async function uploadImageToS3(buffer, originalName, productName) {
@@ -290,16 +290,26 @@ export const createProduct = async (req, res) => {
         location: parsedBatchData.location || 'Main Warehouse'
       };
       
+      console.log(`[CREATE PRODUCT] Attempting to add product ${product._id} to latest batch...`);
+      
       const batchResult = await batchGroupService.addProductToBatch(
         productForBatching,
-        req.user.id || req.user._id
+        req.user.id || req.user._id,
+        true // isSingleProduct = true for individual product creation
       );
       
       console.log(`[CREATE PRODUCT] ${batchResult.action === 'ADDED_TO_EXISTING' ? 'Added to existing' : 'Created new'} batch group: ${batchResult.batchGroup.batchGroupNumber}`);
       
     } catch (batchError) {
       console.error('[CREATE PRODUCT] Error creating batch group:', batchError);
-      // Don't fail product creation if batch creation fails
+      console.error('[CREATE PRODUCT] Batch error details:', {
+        message: batchError.message,
+        stack: batchError.stack,
+        productId: product._id,
+        userId: req.user?.id || req.user?._id
+      });
+      // Don't fail product creation if batch creation fails - product is already saved
+      console.log('[CREATE PRODUCT] Product created successfully despite batch error');
     }
     
     res.status(201).json({ 

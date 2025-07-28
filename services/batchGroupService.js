@@ -142,15 +142,16 @@ export const createBulkBatchGroup = async ({ products, batchConfig, groupIdentif
  * Add individual product to the latest compatible batch group
  * If no compatible batch found, create a new one
  */
-export const addProductToBatch = async (productData, userId) => {
+export const addProductToBatch = async (productData, userId, isSingleProduct = true) => {
   try {
-    console.log(`[BATCH SERVICE] Adding product ${productData.productId} to batch`);
+    console.log(`[BATCH SERVICE] Adding ${isSingleProduct ? 'single' : 'bulk'} product ${productData.productId} to batch`);
     
     // Try to find the latest compatible batch group
-    const compatibleBatch = await findLatestCompatibleBatch(productData);
+    // For single products, always use latest batch regardless of compatibility
+    const compatibleBatch = await findLatestCompatibleBatch(productData, isSingleProduct);
     
     if (compatibleBatch) {
-      console.log(`[BATCH SERVICE] Found compatible batch group ${compatibleBatch.batchGroupNumber}`);
+      console.log(`[BATCH SERVICE] Found ${isSingleProduct ? 'latest' : 'compatible'} batch group ${compatibleBatch.batchGroupNumber}`);
       
       // Add product to existing batch group
       const existingProduct = compatibleBatch.products.find(p => 
@@ -159,12 +160,15 @@ export const addProductToBatch = async (productData, userId) => {
       
       if (existingProduct) {
         // Product already exists in batch, update quantities
+        console.log(`[BATCH SERVICE] Product ${productData.productId} already exists in batch, updating quantities`);
+        
         if (productData.hasVariants && productData.variants) {
           for (const variant of productData.variants) {
             const existingVariant = existingProduct.variants.find(v => v.variantId === variant.id);
             if (existingVariant) {
               existingVariant.quantity += variant.stock;
               existingVariant.availableQuantity += variant.stock;
+              console.log(`[BATCH SERVICE] Updated variant ${variant.name}: +${variant.stock} stock`);
             } else {
               existingProduct.variants.push({
                 variantId: variant.id,
@@ -174,14 +178,17 @@ export const addProductToBatch = async (productData, userId) => {
                 allocatedQuantity: 0,
                 usedQuantity: 0
               });
+              console.log(`[BATCH SERVICE] Added new variant ${variant.name} with ${variant.stock} stock`);
             }
           }
         } else {
           existingProduct.quantity += productData.stock;
           existingProduct.availableQuantity += productData.stock;
+          console.log(`[BATCH SERVICE] Updated main product stock: +${productData.stock}`);
         }
       } else {
         // Add new product to batch group
+        console.log(`[BATCH SERVICE] Adding new product ${productData.productId} to existing batch group`);
         const newBatchProduct = createBatchProductObject(productData);
         compatibleBatch.products.push(newBatchProduct);
       }
@@ -196,7 +203,7 @@ export const addProductToBatch = async (productData, userId) => {
       };
     } else {
       // No compatible batch found, create new one
-      console.log(`[BATCH SERVICE] No compatible batch found, creating new batch group`);
+      console.log(`[BATCH SERVICE] No ${isSingleProduct ? 'active' : 'compatible'} batch found, creating new batch group`);
       
       const newBatchGroup = await createSingleProductBatch(productData, userId);
       
@@ -215,33 +222,50 @@ export const addProductToBatch = async (productData, userId) => {
 
 /**
  * Find latest compatible batch group for a product
+ * For single product creation, prioritize latest batch over strict compatibility
  */
-export const findLatestCompatibleBatch = async (productData) => {
+export const findLatestCompatibleBatch = async (productData, forSingleProduct = false) => {
   try {
-    // Look for active batch groups that:
-    // 1. Have the same supplier
-    // 2. Have similar dates (within 7 days)
-    // 3. Are not expired
-    // 4. Were created recently (within 30 days)
-    
-    const supplierName = productData.supplierInfo?.supplierName || 'Indiraa Foods Pvt Ltd';
-    const productManufacturingDate = productData.manufacturingDate ? new Date(productData.manufacturingDate) : new Date();
-    
-    const compatibleBatches = await BatchGroup.find({
-      status: 'Active',
-      'supplierInfo.supplierName': supplierName,
-      defaultManufacturingDate: {
-        $gte: new Date(productManufacturingDate.getTime() - 7 * 24 * 60 * 60 * 1000), // Within 7 days before
-        $lte: new Date(productManufacturingDate.getTime() + 7 * 24 * 60 * 60 * 1000)  // Within 7 days after
-      },
-      createdAt: {
-        $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Created within last 30 days
+    if (forSingleProduct) {
+      // For single product creation: Always use the latest active batch
+      console.log('[BATCH SERVICE] Finding latest batch for single product creation...');
+      
+      const latestBatch = await BatchGroup.findOne({
+        status: 'Active'
+      })
+      .sort({ createdAt: -1 }) // Latest first
+      .limit(1);
+      
+      if (latestBatch) {
+        console.log(`[BATCH SERVICE] Found latest batch: ${latestBatch.batchGroupNumber} (created: ${latestBatch.createdAt})`);
+        return latestBatch;
+      } else {
+        console.log('[BATCH SERVICE] No active batches found for single product - will create new batch');
+        return null;
       }
-    })
-    .sort({ createdAt: -1 }) // Latest first
-    .limit(1);
-    
-    return compatibleBatches.length > 0 ? compatibleBatches[0] : null;
+    } else {
+      // For bulk uploads: Use compatibility logic
+      console.log('[BATCH SERVICE] Finding compatible batch for bulk upload...');
+      
+      const supplierName = productData.supplierInfo?.supplierName || 'Indiraa Foods Pvt Ltd';
+      const productManufacturingDate = productData.manufacturingDate ? new Date(productData.manufacturingDate) : new Date();
+      
+      const compatibleBatches = await BatchGroup.find({
+        status: 'Active',
+        'supplierInfo.supplierName': supplierName,
+        defaultManufacturingDate: {
+          $gte: new Date(productManufacturingDate.getTime() - 7 * 24 * 60 * 60 * 1000), // Within 7 days before
+          $lte: new Date(productManufacturingDate.getTime() + 7 * 24 * 60 * 60 * 1000)  // Within 7 days after
+        },
+        createdAt: {
+          $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Created within last 30 days
+        }
+      })
+      .sort({ createdAt: -1 }) // Latest first
+      .limit(1);
+      
+      return compatibleBatches.length > 0 ? compatibleBatches[0] : null;
+    }
     
   } catch (error) {
     console.error('[BATCH SERVICE] Error finding compatible batch:', error);
@@ -251,6 +275,7 @@ export const findLatestCompatibleBatch = async (productData) => {
 
 /**
  * Create a new batch group for a single product
+ * Enhanced with better defaults and error handling
  */
 export const createSingleProductBatch = async (productData, userId) => {
   try {
@@ -258,17 +283,23 @@ export const createSingleProductBatch = async (productData, userId) => {
     
     const batchProduct = createBatchProductObject(productData);
     
+    // Use provided dates or sensible defaults
+    const manufacturingDate = productData.manufacturingDate ? new Date(productData.manufacturingDate) : new Date();
+    const expiryDate = productData.expiryDate ? new Date(productData.expiryDate) : null;
+    const bestBeforeDate = productData.bestBeforeDate ? new Date(productData.bestBeforeDate) : null;
+    
     const batchGroup = new BatchGroup({
       batchGroupNumber,
       groupType: 'MANUAL_ENTRY',
       products: [batchProduct],
-      defaultManufacturingDate: productData.manufacturingDate ? new Date(productData.manufacturingDate) : new Date(),
-      defaultExpiryDate: productData.expiryDate ? new Date(productData.expiryDate) : null,
-      defaultBestBeforeDate: productData.bestBeforeDate ? new Date(productData.bestBeforeDate) : null,
+      defaultManufacturingDate: manufacturingDate,
+      defaultExpiryDate: expiryDate,
+      defaultBestBeforeDate: bestBeforeDate,
       supplierInfo: productData.supplierInfo || {
         supplierName: 'Indiraa Foods Pvt Ltd',
         contactInfo: 'info@indiraafoods.com',
-        receivedDate: new Date()
+        receivedDate: new Date(),
+        notes: `Single product batch created on ${new Date().toLocaleDateString()}`
       },
       location: productData.location || 'Main Warehouse',
       status: 'Active',
@@ -277,7 +308,7 @@ export const createSingleProductBatch = async (productData, userId) => {
     
     await batchGroup.save();
     
-    console.log(`[BATCH SERVICE] Created new batch group ${batchGroupNumber} for single product`);
+    console.log(`[BATCH SERVICE] Created new batch group ${batchGroupNumber} for single product ${productData.productId}`);
     
     return batchGroup;
     
