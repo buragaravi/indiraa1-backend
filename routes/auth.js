@@ -538,14 +538,20 @@ router.post('/reset-password', async (req, res) => {
 // Update push token for notifications
 router.post('/update-push-token', authenticateUser, async (req, res) => {
   try {
+    console.log(`[PUSH_TOKEN] Request received from user: ${req.user?.userId || req.user.id || req.user._id}`);
+    console.log(`[PUSH_TOKEN] Request headers:`, req.headers);
+    console.log(`[PUSH_TOKEN] Request body:`, req.body);
+    
     const { pushToken } = req.body;
-    const userId = req.user.userId;
+    const userId = req.user?.userId || req.user.id || req.user._id;
 
     if (!pushToken) {
+      console.log(`[PUSH_TOKEN] No push token provided in request body`);
       return res.status(400).json({ message: 'Push token is required' });
     }
 
     console.log(`[PUSH_TOKEN] Updating push token for user: ${userId}`);
+    console.log(`[PUSH_TOKEN] Push token: ${pushToken}`);
 
     // Update user's push token
     const user = await User.findByIdAndUpdate(
@@ -555,6 +561,7 @@ router.post('/update-push-token', authenticateUser, async (req, res) => {
     );
 
     if (!user) {
+      console.log(`[PUSH_TOKEN] User not found: ${userId}`);
       return res.status(404).json({ message: 'User not found' });
     }
 
