@@ -68,6 +68,13 @@ const userSchema = new mongoose.Schema({
   
   pushToken: { type: String },
   
+  // Notification preferences
+  notificationPreferences: {
+    orders: { type: Boolean, default: true },
+    offers: { type: Boolean, default: true },
+    general: { type: Boolean, default: true },
+  },
+  
   // Web Push Notification Subscription
   webPushSubscription: {
     endpoint: { type: String },

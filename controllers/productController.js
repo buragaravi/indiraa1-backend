@@ -966,14 +966,30 @@ export const createOrder = async (req, res) => {
           }
         );
       }
-    }// Notify all admins of new order
+    }    // Notify all admins of new order using enhanced push notifications
     try {
-      const admins = await Admin.find({ pushToken: { $exists: true, $ne: null } });
       const user = await User.findById(userId);
-      if (admins.length > 0 && user) {
-        await notifications.notifyAdminsNewOrder(admins, order._id, user.name);
+      if (user) {
+        // Send push notification to user about order confirmation
+        await notifications.notifyOrderStatus(userId, order._id, 'placed', {
+          totalAmount: totalAmount,
+          itemCount: items.length
+        });
+
+        // Send push notification to all admins about new order
+        await notifications.notifyAdminsNewOrder(order._id, {
+          name: user.name,
+          username: user.username,
+          phone: user.phone
+        }, {
+          total: totalAmount,
+          itemCount: items.length,
+          paymentMethod: paymentMethod
+        });
+
+        console.log(`[PUSH] Order notifications sent for order ${order._id}`);
       } else {
-        console.log('[ORDER] No push notifications sent - missing admins or user');
+        console.log('[PUSH] No user found for notifications');
       }
 
       // Send order placed email using your Brevo service

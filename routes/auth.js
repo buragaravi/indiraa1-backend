@@ -535,4 +535,72 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// Update push token for notifications
+router.post('/update-push-token', authenticateUser, async (req, res) => {
+  try {
+    const { pushToken } = req.body;
+    const userId = req.user.userId;
+
+    if (!pushToken) {
+      return res.status(400).json({ message: 'Push token is required' });
+    }
+
+    console.log(`[PUSH_TOKEN] Updating push token for user: ${userId}`);
+
+    // Update user's push token
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      { pushToken },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    console.log(`[PUSH_TOKEN] Push token updated successfully for user: ${userId}`);
+    res.json({ message: 'Push token updated successfully' });
+
+  } catch (error) {
+    console.error('[PUSH_TOKEN] Error updating push token:', error);
+    res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+});
+
+// Update notification preferences
+router.post('/notification-preferences', authenticateUser, async (req, res) => {
+  try {
+    const { orders, offers, general } = req.body;
+    const userId = req.user.userId;
+
+    console.log(`[NOTIFICATION_PREFS] Updating preferences for user: ${userId}`);
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        notificationPreferences: {
+          orders: orders !== undefined ? orders : true,
+          offers: offers !== undefined ? offers : true,
+          general: general !== undefined ? general : true,
+        }
+      },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    console.log(`[NOTIFICATION_PREFS] Preferences updated for user: ${userId}`);
+    res.json({ 
+      message: 'Notification preferences updated successfully',
+      preferences: user.notificationPreferences 
+    });
+
+  } catch (error) {
+    console.error('[NOTIFICATION_PREFS] Error updating preferences:', error);
+    res.status(500).json({ message: 'Server error. Please try again.' });
+  }
+});
+
 export default router;
