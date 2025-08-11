@@ -266,18 +266,19 @@ app.post('/api/test/visit-rewards', async (req, res) => {
   }
 });
 
-// Schedule offer notifications every 30 minutes - DISABLED
-cron.schedule('*/30 * * * *', async () => {
-  try {
-    const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-    if (users.length > 0) {
-      await notifications.notifyOffers(users);
-      console.log(`[CRON] Sent offer notifications to ${users.length} users.`);
-    }
-  } catch (err) {
-    console.error('[CRON] Failed to send offer notifications:', err);
-  }
-});
+// Schedule promotional notifications - now handled by promotionalNotificationService
+// This CRON job is disabled in favor of the new promotional notification service
+// cron.schedule('*/30 * * * *', async () => {
+//   try {
+//     const users = await User.find({ pushToken: { $exists: true, $ne: null } });
+//     if (users.length > 0) {
+//       await notifications.notifyScheduledOffers();
+//       console.log(`[CRON] Sent offer notifications to ${users.length} users.`);
+//     }
+//   } catch (err) {
+//     console.error('[CRON] Failed to send offer notifications:', err);
+//   }
+// });
 
 // Schedule banner cleanup every hour - DISABLED  
 // cron.schedule('0 * * * *', async () => {

@@ -323,3 +323,69 @@ export async function sendBulkNotifications(notifications) {
     return [];
   }
 }
+
+// 📢 PROMOTIONAL NOTIFICATIONS (Legacy Support)
+
+// Send offer notifications to multiple users (for backward compatibility)
+export async function notifyOffers(users) {
+  try {
+    console.log(`📢 Sending offer notifications to ${users.length} users...`);
+    
+    const offerMessages = [
+      {
+        title: "🔥 Special Offers Inside!",
+        body: "Amazing deals waiting for you! Don't miss out on exclusive discounts!"
+      },
+      {
+        title: "💰 Save Big Today!",
+        body: "Limited time offers on your favorite products. Shop now and save!"
+      },
+      {
+        title: "🛒 Fresh Deals Available!",
+        body: "New arrivals and special prices just for you. Check them out!"
+      }
+    ];
+
+    const randomMessage = offerMessages[Math.floor(Math.random() * offerMessages.length)];
+    
+    let successCount = 0;
+    let failureCount = 0;
+
+    // Send notifications to users who have promotional preferences enabled
+    for (const user of users) {
+      try {
+        // Check if user allows promotional notifications
+        if (!user.notificationPreferences?.promotional && 
+            !user.notificationPreferences?.offers) {
+          continue;
+        }
+
+        const result = await sendPushNotification(
+          user.pushToken,
+          randomMessage.title,
+          randomMessage.body,
+          { 
+            type: 'promotional',
+            category: 'offer'
+          }
+        );
+
+        if (result.success) {
+          successCount++;
+        } else {
+          failureCount++;
+        }
+      } catch (error) {
+        console.error(`❌ Error sending offer notification to user ${user._id}:`, error);
+        failureCount++;
+      }
+    }
+
+    console.log(`📊 Offer notifications sent: ${successCount} success, ${failureCount} failed`);
+    return { success: true, sent: successCount, failed: failureCount };
+
+  } catch (error) {
+    console.error('❌ Error in notifyOffers:', error);
+    return { success: false, error: error.message };
+  }
+}
