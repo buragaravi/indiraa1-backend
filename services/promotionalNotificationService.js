@@ -111,8 +111,6 @@ class PromotionalNotificationService {
       // Get all users who have push tokens and allow promotional notifications
       const eligibleUsers = await User.find({
         pushToken: { $exists: true, $ne: null },
-        'notificationPreferences.promotional': true,
-        isActive: true
       });
 
       console.log(`👥 Found ${eligibleUsers.length} eligible users for promotional notifications`);
