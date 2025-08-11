@@ -5,17 +5,31 @@ import { Admin } from '../models/Admin.js'
 
 // VAPID keys configuration
 const vapidKeys = {
-  publicKey: 'BG3Gx8HYNaOQfMnT...', // Replace with your actual VAPID public key
-  privateKey: 'YOUR_VAPID_PRIVATE_KEY_HERE', // Replace with your actual VAPID private key
-  subject: 'mailto:admin@indiraa1.com'
+  publicKey: process.env.VAPID_PUBLIC_KEY || 'BG3Gx8HYNaOQfMnT...', // Replace with your actual VAPID public key
+  privateKey: process.env.VAPID_PRIVATE_KEY || 'YOUR_VAPID_PRIVATE_KEY_HERE', // Replace with your actual VAPID private key
+  subject: process.env.VAPID_EMAIL || 'mailto:admin@indiraa1.com'
 }
 
+let pwaPushConfigured = false;
+
 // Initialize web-push
-webpush.setVapidDetails(
-  vapidKeys.subject,
-  vapidKeys.publicKey,
-  vapidKeys.privateKey
-)
+try {
+  if (vapidKeys.publicKey && vapidKeys.privateKey && !vapidKeys.publicKey.includes('...')) {
+    const formattedSubject = vapidKeys.subject.startsWith('mailto:') ? vapidKeys.subject : `mailto:${vapidKeys.subject}`;
+    webpush.setVapidDetails(
+      formattedSubject,
+      vapidKeys.publicKey,
+      vapidKeys.privateKey
+    );
+    pwaPushConfigured = true;
+    console.log('✅ PWA Push VAPID configured successfully');
+  } else {
+    console.warn('⚠️ PWA Push VAPID keys not properly configured, skipping');
+  }
+} catch (error) {
+  console.warn('⚠️ Failed to configure PWA Push VAPID keys:', error.message);
+  pwaPushConfigured = false;
+}
 
 class PWAPushNotificationService {
   constructor() {

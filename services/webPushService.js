@@ -7,16 +7,22 @@ const vapidPublicKey = process.env.VAPID_PUBLIC_KEY
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY
 const vapidEmail = process.env.VAPID_EMAIL || 'mailto:support@indiraa1.com'
 
+let webPushConfigured = false;
+
 if (!vapidPublicKey || !vapidPrivateKey) {
-  console.error('❌ VAPID keys not found in environment variables')
-  console.log('Please add VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY to your .env file')
+  console.warn('⚠️ VAPID keys not found in environment variables')
+  console.log('Web push notifications will be disabled')
 } else {
   try {
-    webpush.setVapidDetails(vapidEmail, vapidPublicKey, vapidPrivateKey)
+    // Ensure vapidEmail is in correct format
+    const formattedVapidEmail = vapidEmail.startsWith('mailto:') ? vapidEmail : `mailto:${vapidEmail}`;
+    webpush.setVapidDetails(formattedVapidEmail, vapidPublicKey, vapidPrivateKey)
+    webPushConfigured = true;
     console.log('✅ Web Push VAPID configured successfully')
   } catch (error) {
-    console.error('❌ Failed to configure VAPID keys:', error.message)
-    console.log('Please check your VAPID keys in the .env file')
+    console.warn('⚠️ Failed to configure VAPID keys:', error.message)
+    console.log('Web push notifications will be disabled')
+    webPushConfigured = false;
   }
 }
 
@@ -49,6 +55,11 @@ export async function storeUserSubscription(userId, subscription) {
 // Send web push notification to specific user
 export async function sendWebPushNotification(userId, payload) {
   try {
+    if (!webPushConfigured) {
+      console.log('⚠️ Web push not configured, skipping notification');
+      return { success: false, reason: 'Web push not configured' };
+    }
+
     const user = await User.findById(userId)
     if (!user || !user.webPushSubscription) {
       console.log(`⚠️ No web push subscription found for user ${userId}`)

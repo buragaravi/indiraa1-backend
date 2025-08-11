@@ -267,17 +267,17 @@ app.post('/api/test/visit-rewards', async (req, res) => {
 });
 
 // Schedule offer notifications every 30 minutes - DISABLED
-// cron.schedule('*/30 * * * *', async () => {
-//   try {
-//     const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-//     if (users.length > 0) {
-//       await notifications.notifyOffers(users);
-//       console.log(`[CRON] Sent offer notifications to ${users.length} users.`);
-//     }
-//   } catch (err) {
-//     console.error('[CRON] Failed to send offer notifications:', err);
-//   }
-// });
+cron.schedule('*/30 * * * *', async () => {
+  try {
+    const users = await User.find({ pushToken: { $exists: true, $ne: null } });
+    if (users.length > 0) {
+      await notifications.notifyOffers(users);
+      console.log(`[CRON] Sent offer notifications to ${users.length} users.`);
+    }
+  } catch (err) {
+    console.error('[CRON] Failed to send offer notifications:', err);
+  }
+});
 
 // Schedule banner cleanup every hour - DISABLED  
 // cron.schedule('0 * * * *', async () => {
@@ -299,8 +299,18 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
-    service: 'Indiraa1 Backend'
+    service: 'Indiraa1 Backend',
+    vapidConfigured: process.env.VAPID_PUBLIC_KEY ? 'configured' : 'not configured'
   })
+})
+
+// Simple test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'Server is working!', 
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV || 'development'
+  });
 })
 
 // Root URL: Show backend info and features
@@ -652,16 +662,25 @@ const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => {
+    console.log('✅ MongoDB connected successfully');
     app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🌐 Server accessible at: https://indiraa1-backend.onrender.com`);
       
       // Initialize batch management scheduled jobs - DISABLED FOR NOW
       // initializeBatchScheduler();
       console.log('[INFO] Batch scheduler disabled - no automatic stock updates');
       
       // Start promotional notification scheduler
-      promotionalNotificationService.startScheduler();
-      console.log('[INFO] Promotional notification scheduler started');
+      try {
+        promotionalNotificationService.startScheduler();
+        console.log('[INFO] Promotional notification scheduler started');
+      } catch (error) {
+        console.warn('[WARN] Promotional notification scheduler failed to start:', error.message);
+      }
     });
   })
-  .catch(err => console.error('MongoDB connection error:', err));
+  .catch(err => {
+    console.error('❌ MongoDB connection error:', err);
+    process.exit(1);
+  });
