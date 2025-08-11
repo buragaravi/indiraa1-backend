@@ -45,6 +45,8 @@ import adminReturnRoutes from './routes/adminReturns.js';
 import warehouseReturnRoutes from './routes/warehouseReturns.js';
 import deliveryReturnRoutes from './routes/deliveryReturns.js';
 import returnAnalyticsRoutes from './routes/returnAnalytics.js';
+import promotionalNotificationService from './services/promotionalNotificationService.js';
+import promotionalNotificationRoutes from './routes/promotionalNotifications.js';
 import { initializeBatchScheduler } from './utils/batchScheduler.js';
 
 const app = express();
@@ -74,6 +76,7 @@ app.use('/api/admin/returns', adminReturnRoutes);
 app.use('/api/warehouse/returns', warehouseReturnRoutes);
 app.use('/api/delivery/returns', deliveryReturnRoutes);
 app.use('/api/return-analytics', returnAnalyticsRoutes);
+app.use('/api/promotional-notifications', promotionalNotificationRoutes);
 
 // Add endpoint to receive and store user push tokens
 app.post('/api/users/push-token', authenticateUser, async (req, res) => {
@@ -655,6 +658,10 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
       // Initialize batch management scheduled jobs - DISABLED FOR NOW
       // initializeBatchScheduler();
       console.log('[INFO] Batch scheduler disabled - no automatic stock updates');
+      
+      // Start promotional notification scheduler
+      promotionalNotificationService.startScheduler();
+      console.log('[INFO] Promotional notification scheduler started');
     });
   })
   .catch(err => console.error('MongoDB connection error:', err));
