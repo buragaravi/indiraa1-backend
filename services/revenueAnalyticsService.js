@@ -339,17 +339,22 @@ export const getComprehensiveAnalytics = async () => {
   try {
     console.log('[ANALYTICS] Starting comprehensive analytics calculation...');
     
-    const [revenueData, inventoryData] = await Promise.all([
+    const [revenueData, inventoryData, trendsData] = await Promise.all([
       calculateRevenueAnalytics(),
-      calculateInventoryAnalytics()
+      calculateInventoryAnalytics(),
+      calculateTrendsAndTimeline()
     ]);
     
     const profitabilityData = await calculateProfitabilityAnalytics(revenueData);
     
     const comprehensiveAnalytics = {
-      revenue: revenueData,
+      revenue: {
+        ...revenueData,
+        timeline: trendsData.timeline
+      },
       inventory: inventoryData,
       profitability: profitabilityData,
+      trends: trendsData.trends,
       actionItems: generateActionItems(revenueData, inventoryData),
       lastUpdated: new Date().toISOString()
     };
@@ -359,6 +364,154 @@ export const getComprehensiveAnalytics = async () => {
     
   } catch (error) {
     console.error('[ANALYTICS] Error in comprehensive analytics:', error);
+    throw error;
+  }
+};
+
+// Calculate trends and timeline data
+export const calculateTrendsAndTimeline = async () => {
+  try {
+    console.log('[TRENDS ANALYTICS] Calculating trends and timeline data...');
+    
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfWeek = new Date(startOfDay);
+    startOfWeek.setDate(startOfDay.getDate() - startOfDay.getDay());
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    
+    // Get orders for different time periods
+    const [todayOrders, weekOrders, monthOrders, yearOrders, last30Days] = await Promise.all([
+      Order.find({ createdAt: { $gte: startOfDay } }).select('totalAmount createdAt status').lean(),
+      Order.find({ createdAt: { $gte: startOfWeek } }).select('totalAmount createdAt status').lean(),
+      Order.find({ createdAt: { $gte: startOfMonth } }).select('totalAmount createdAt status').lean(),
+      Order.find({ createdAt: { $gte: startOfYear } }).select('totalAmount createdAt status').lean(),
+      Order.find({ 
+        createdAt: { 
+          $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) 
+        } 
+      }).select('totalAmount createdAt status').lean()
+    ]);
+    
+    // Calculate timeline data
+    const timeline = {
+      today: {
+        orders: todayOrders.length,
+        revenue: todayOrders.reduce((sum, order) => sum + (order.totalAmount || 0), 0)
+      },
+      thisWeek: {
+        orders: weekOrders.length,
+        revenue: weekOrders.reduce((sum, order) => sum + (order.totalAmount || 0), 0)
+      },
+      thisMonth: {
+        orders: monthOrders.length,
+        revenue: monthOrders.reduce((sum, order) => sum + (order.totalAmount || 0), 0)
+      },
+      thisYear: {
+        orders: yearOrders.length,
+        revenue: yearOrders.reduce((sum, order) => sum + (order.totalAmount || 0), 0)
+      }
+    };
+    
+    // Calculate daily trends for last 7 days
+    const dailyRevenue = [];
+    for (let i = 6; i >= 0; i--) {
+      const dayStart = new Date(now);
+      dayStart.setDate(dayStart.getDate() - i);
+      dayStart.setHours(0, 0, 0, 0);
+      
+      const dayEnd = new Date(dayStart);
+      dayEnd.setHours(23, 59, 59, 999);
+      
+      const dayOrders = last30Days.filter(order => {
+        const orderDate = new Date(order.createdAt);
+        return orderDate >= dayStart && orderDate <= dayEnd;
+      });
+      
+      dailyRevenue.push(dayOrders.reduce((sum, order) => sum + (order.totalAmount || 0), 0));
+    }
+    
+    // Calculate weekly trends for last 4 weeks
+    const weeklyOrders = [];
+    for (let i = 3; i >= 0; i--) {
+      const weekStart = new Date(now);
+      weekStart.setDate(weekStart.getDate() - (i * 7) - weekStart.getDay());
+      weekStart.setHours(0, 0, 0, 0);
+      
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+      weekEnd.setHours(23, 59, 59, 999);
+      
+      const weekOrdersCount = last30Days.filter(order => {
+        const orderDate = new Date(order.createdAt);
+        return orderDate >= weekStart && orderDate <= weekEnd;
+      }).length;
+      
+      weeklyOrders.push(weekOrdersCount);
+    }
+    
+    // Calculate monthly trends for last 12 months based on order placed dates
+    const monthlyGrowth = [];
+    const monthlyLabels = [];
+    
+    for (let i = 11; i >= 0; i--) {
+      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
+      monthEnd.setHours(23, 59, 59, 999); // Set to end of day
+      
+      console.log(`[MONTHLY GROWTH] Processing month ${i}: ${monthStart.toISOString()} to ${monthEnd.toISOString()}`);
+      
+      // Get orders placed in this month (based on createdAt)
+      const monthRevenue = await Order.aggregate([
+        {
+          $match: {
+            createdAt: { 
+              $gte: monthStart, 
+              $lte: monthEnd 
+            },
+            status: { $ne: 'cancelled' } // Exclude cancelled orders
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalRevenue: { $sum: '$totalAmount' },
+            orderCount: { $sum: 1 }
+          }
+        }
+      ]);
+      
+      const revenue = monthRevenue[0]?.totalRevenue || 0;
+      const orders = monthRevenue[0]?.orderCount || 0;
+      
+      monthlyGrowth.push(revenue);
+      
+      // Create readable month labels
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthLabel = monthNames[monthStart.getMonth()];
+      const yearLabel = monthStart.getFullYear() === now.getFullYear() ? '' : ` ${monthStart.getFullYear()}`;
+      monthlyLabels.push(`${monthLabel}${yearLabel}`);
+      
+      console.log(`[MONTHLY GROWTH] ${monthLabel}${yearLabel}: ₹${revenue} (${orders} orders)`);
+    }
+
+    const trends = {
+      dailyRevenue,
+      weeklyOrders,
+      monthlyGrowth,
+      monthlyLabels // Add labels for better frontend display
+    };
+    
+    console.log('[TRENDS ANALYTICS] Calculated trends:', {
+      dailyRevenue: dailyRevenue.length,
+      weeklyOrders: weeklyOrders.length,
+      monthlyGrowth: monthlyGrowth.length
+    });
+    
+    return { trends, timeline };
+  } catch (error) {
+    console.error('[TRENDS ANALYTICS] Error calculating trends:', error);
     throw error;
   }
 };

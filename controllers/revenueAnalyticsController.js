@@ -385,7 +385,10 @@ export const getTopPerformingProducts = async (req, res) => {
           _id: {
             productId: '$items.id',
             productName: '$items.name',
-            type: '$items.type'
+            type: '$items.itemType',
+            variantId: '$items.variantId',
+            variantName: '$items.variantName',
+            image: '$items.image'
           },
           totalRevenue: { $sum: { $multiply: ['$items.price', '$items.qty'] } },
           totalQuantitySold: { $sum: '$items.qty' },
@@ -395,15 +398,89 @@ export const getTopPerformingProducts = async (req, res) => {
       { $sort: { totalRevenue: -1 } },
       { $limit: parseInt(limit) }
     ]);
+
+    // Enhance product data with full product information
+    const enhancedProducts = await Promise.all(
+      topProducts.map(async (product) => {
+        try {
+          // Get full product details
+          const fullProduct = await Product.findById(product._id.productId)
+            .select('name description images hasVariants variants')
+            .lean();
+
+          if (!fullProduct) {
+            return {
+              productId: product._id.productId,
+              productName: product._id.productName || 'Deleted Product',
+              productImage: product._id.image || null,
+              hasVariants: false,
+              variantInfo: null,
+              totalRevenue: product.totalRevenue,
+              totalQuantitySold: product.totalQuantitySold,
+              orderCount: product.orderCount,
+              itemType: product._id.type || 'product'
+            };
+          }
+
+          // Determine the best image to use
+          let productImage = product._id.image;
+          let variantInfo = null;
+
+          // If it's a variant, get variant-specific details
+          if (product._id.variantId && fullProduct.hasVariants) {
+            const variant = fullProduct.variants.find(v => v.id === product._id.variantId);
+            if (variant) {
+              variantInfo = {
+                id: variant.id,
+                name: variant.name,
+                label: variant.label,
+                price: variant.price,
+                originalPrice: variant.originalPrice
+              };
+              // Use variant image if available, otherwise product image
+              productImage = variant.images?.[0] || fullProduct.images?.[0] || productImage;
+            }
+          } else {
+            // Use product's main image
+            productImage = fullProduct.images?.[0] || productImage;
+          }
+
+          return {
+            productId: product._id.productId,
+            productName: fullProduct.name,
+            productImage: productImage,
+            hasVariants: fullProduct.hasVariants,
+            variantInfo: variantInfo,
+            totalRevenue: product.totalRevenue,
+            totalQuantitySold: product.totalQuantitySold,
+            orderCount: product.orderCount,
+            itemType: product._id.type || 'product'
+          };
+        } catch (error) {
+          console.error('[TOP PRODUCTS] Error enhancing product:', error);
+          return {
+            productId: product._id.productId || 'unknown',
+            productName: product._id.productName || 'Unknown Product',
+            productImage: product._id.image || null,
+            hasVariants: false,
+            variantInfo: null,
+            totalRevenue: product.totalRevenue,
+            totalQuantitySold: product.totalQuantitySold,
+            orderCount: product.orderCount,
+            itemType: product._id.type || 'product'
+          };
+        }
+      })
+    );
     
     res.status(200).json({
       success: true,
       data: {
-        topProducts,
+        topProducts: enhancedProducts,
         period: `${period} days`,
         summary: {
-          totalProducts: topProducts.length,
-          totalRevenue: topProducts.reduce((sum, product) => sum + product.totalRevenue, 0)
+          totalProducts: enhancedProducts.length,
+          totalRevenue: enhancedProducts.reduce((sum, product) => sum + product.totalRevenue, 0)
         }
       },
       message: 'Top performing products retrieved successfully'
