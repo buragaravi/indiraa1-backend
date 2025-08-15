@@ -195,13 +195,13 @@ export const getAllComboPacks = async (req, res) => {
       search,
       sortBy = 'createdAt',
       sortOrder = 'desc',
-      active = true
+      active = false
     } = req.query;
 
     // Build filter query
     const filter = {};
     
-    if (active !== 'false') {
+    if (active) {
       filter.isActive = true;
       filter.isVisible = true;
     }

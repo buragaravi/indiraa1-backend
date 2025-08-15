@@ -97,8 +97,8 @@ app.post('/api/users/push-token', authenticateUser, async (req, res) => {
 app.post('/api/admins/push-token', authenticateUser, async (req, res) => {
   try {
     const { token } = req.body;
-
-    const admin = await Admin.findById(req.user.adminId);
+    const id = req.user._id || req.user.id || req.user.userId || req.user.adminId;
+    const admin = await Admin.findById(id);
     if (!admin) return res.status(404).json({ message: 'Admin not found.' });
     admin.pushToken = token;
     await admin.save();

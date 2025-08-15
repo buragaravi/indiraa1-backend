@@ -12,6 +12,10 @@ const router = express.Router();
 // Apply admin authentication to all routes
 router.use(authenticateAdminOrSubAdmin);
 
+// Dashboard-specific analytics endpoint (fast and lightweight)
+// GET /api/revenue-analytics/dashboard
+router.get('/dashboard', revenueAnalyticsController.getDashboardAnalytics);
+
 // Main revenue analytics endpoint
 // GET /api/revenue-analytics
 router.get('/', revenueAnalyticsController.getRevenueAnalytics);

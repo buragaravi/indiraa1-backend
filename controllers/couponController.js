@@ -26,7 +26,7 @@ export const createCoupon = async (req, res) => {
       });
     }
 
-    if (!type || !['percentage', 'flat'].includes(type.toLowerCase())) {
+    if (!type || !['percent', 'flat'].includes(type.toLowerCase())) {
       return res.status(400).json({
         field: 'type',
         message: 'Coupon type must be "percentage" or "flat".'

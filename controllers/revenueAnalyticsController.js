@@ -1,11 +1,81 @@
 import revenueAnalyticsService from '../services/revenueAnalyticsService.js';
 import Order from '../models/Order.js';
+import Product from '../models/Product.js';
+import Coupon from '../models/Coupon.js';
 import mongoose from 'mongoose';
 
 /**
  * Revenue Analytics Controller
  * Handles all revenue and business analytics endpoints for admin dashboard
  */
+
+// Get dashboard-specific analytics (simplified and fast)
+export const getDashboardAnalytics = async (req, res) => {
+  try {
+    console.log('[DASHBOARD ANALYTICS] Getting dashboard analytics...');
+    
+    // Fetch all required data in parallel for better performance
+    const [orders, products, coupons] = await Promise.all([
+      Order.find({}).select('totalAmount status createdAt').lean(),
+      Product.find({}).select('stock').lean(),
+      Coupon.find({}).lean()
+    ]);
+
+    // Calculate order statistics
+    const totalOrders = orders.length;
+    const pendingOrders = orders.filter(order => order.status === 'Pending').length;
+    const shippedOrders = orders.filter(order => order.status === 'Shipped').length;
+    const deliveredOrders = orders.filter(order => order.status === 'Delivered').length;
+    
+    // Calculate revenue (only from delivered orders - already paid)
+    const totalRevenue = orders
+      .filter(order => order.status === 'Delivered')
+      .reduce((sum, order) => sum + (order.totalAmount || 0), 0);
+    
+    // Calculate total income (from all orders including pending)
+    const totalIncome = orders
+      .reduce((sum, order) => sum + (order.totalAmount || 0), 0);
+    
+    // Get recent orders (last 5)
+    const recentOrders = orders
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 5);
+    
+    // Calculate product statistics
+    const totalProducts = products.length;
+    const lowStockProducts = products.filter(product => (product.stock || 0) < 45).length;
+    
+    // Get coupons count
+    const totalCoupons = coupons.length;
+    
+    const dashboardData = {
+      totalProducts,
+      totalOrders,
+      totalCoupons,
+      pendingOrders,
+      shippedOrders,
+      deliveredOrders,
+      totalRevenue,
+      totalIncome,
+      lowStockProducts,
+      recentOrders
+    };
+    
+    res.status(200).json({
+      success: true,
+      data: dashboardData,
+      message: 'Dashboard analytics retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('[DASHBOARD ANALYTICS] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve dashboard analytics',
+      error: error.message
+    });
+  }
+};
 
 // Get comprehensive revenue analytics
 export const getRevenueAnalytics = async (req, res) => {
@@ -404,6 +474,7 @@ const calculateAnalyticsForOrders = async (orders) => {
 };
 
 export default {
+  getDashboardAnalytics,
   getRevenueAnalytics,
   getRevenueAnalyticsByDateRange,
   getRevenueDetailsByCategory,
