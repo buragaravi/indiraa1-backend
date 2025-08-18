@@ -1690,7 +1690,7 @@ export const updateCartItem = async (req, res) => {
   try {
     console.log('Updating cart item for user:', req.user.id);
     console.log('Request body:', req.body);
-    const { productId, quantity: qty, variantId, comboPackId, type, qty:quantity } = req.body;
+    const { productId, qty, variantId, comboPackId, type } = req.body;
     if (!qty || qty < 1) {
       console.error('Invalid quantity:', qty);
       return res.status(400).json({ message: 'Invalid quantity.' });
