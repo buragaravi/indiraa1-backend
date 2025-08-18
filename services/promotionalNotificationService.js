@@ -1,6 +1,7 @@
 import { sendPushNotification } from '../notifications.js';
 import User from '../models/User.js';
 import cron from 'node-cron';
+import { notifyPromotion as notifyPromotionWeb, getUsersWithSubscriptions } from './webPushService.js';
 
 class PromotionalNotificationService {
   constructor() {
@@ -108,21 +109,25 @@ class PromotionalNotificationService {
     try {
       console.log('🚀 Starting bulk promotional notification campaign...');
       
-      // Get all users who have push tokens and allow promotional notifications
+      // Get all users who have mobile push tokens
       const eligibleUsers = await User.find({
         pushToken: { $exists: true, $ne: null },
       });
 
-      console.log(`👥 Found ${eligibleUsers.length} eligible users for promotional notifications`);
+      // Also get PWA-subscribed users for web push
+      const webSubscribedUsers = await getUsersWithSubscriptions();
 
-      if (eligibleUsers.length === 0) {
+  console.log(`👥 Found ${eligibleUsers.length} mobile users and ${webSubscribedUsers.length} web-subscribed users for promotional notifications`);
+
+      if (eligibleUsers.length === 0 && webSubscribedUsers.length === 0) {
         console.log('📭 No eligible users found for promotional notifications');
         return { success: true, sent: 0, message: 'No eligible users' };
       }
 
       let successCount = 0;
       let failureCount = 0;
-      const results = [];
+  const results = [];
+  const message = this.getRandomMessage();
 
       // Send notifications to users in batches to avoid overwhelming the system
       const batchSize = 100; // Process 100 users at a time
@@ -145,6 +150,26 @@ class PromotionalNotificationService {
         // Add a small delay between batches to be respectful to the notification service
         if (i + batchSize < eligibleUsers.length) {
           await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+        }
+      }
+
+      // Send to web-subscribed users via VAPID web push
+      if (webSubscribedUsers.length > 0) {
+        const promoData = {
+          id: `promo-${Date.now()}`,
+          title: message.title,
+          message: message.body,
+          url: '/products',
+        };
+        for (const u of webSubscribedUsers) {
+          try {
+            await notifyPromotionWeb(u._id, promoData);
+            successCount++;
+            results.push({ userId: u._id, platform: 'web', success: true });
+          } catch (err) {
+            failureCount++;
+            results.push({ userId: u._id, platform: 'web', success: false, error: err.message });
+          }
         }
       }
 

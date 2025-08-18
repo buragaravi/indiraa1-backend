@@ -1,5 +1,8 @@
 import User from '../models/User.js';
 import Transaction from '../models/Transaction.js';
+import Notification from '../models/Notification.js';
+import { sendPushNotification } from '../services/pushNotificationService.js';
+import { notifyWalletUpdate as notifyWalletUpdateWeb } from '../services/webPushService.js';
 import { REWARD_CONSTANTS } from '../utils/rewardCalculator.js';
 import { 
   calculateMaxDiscount,
@@ -572,5 +575,367 @@ export const redeemCoinsForOrder = async (userId, orderValue, coinsToRedeem, ord
       success: false,
       message: 'Failed to process coin redemption'
     };
+  }
+};
+
+// ADMIN FUNCTIONS
+
+// Adjust user wallet balance
+export const adjustWalletBalance = async (req, res) => {
+  const { userId } = req.params;
+  const { 
+    amount, 
+    type, // 'add' or 'deduct'
+    reason, 
+    note,
+    adminId 
+  } = req.body;
+
+  if (!amount || amount <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Amount must be greater than 0'
+    });
+  }
+
+  if (!['add', 'deduct'].includes(type)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Type must be either "add" or "deduct"'
+    });
+  }
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const adjustmentAmount = type === 'add' ? amount : -amount;
+    const newBalance = user.wallet.balance + adjustmentAmount;
+
+    if (newBalance < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Insufficient wallet balance for deduction'
+      });
+    }
+
+    // Update user wallet
+    user.wallet.balance = newBalance;
+    if (type === 'add') {
+      user.wallet.totalEarned += amount;
+    } else {
+      user.wallet.totalSpent += amount;
+    }
+    
+    await user.save();
+
+    // Create transaction record
+    const transaction = new Transaction({
+      userId,
+      type: 'MANUAL_ADJUSTMENT',
+      amount,
+      description: `Admin adjustment: ${reason}`,
+      note,
+      source: 'admin_adjustment',
+      status: 'COMPLETED',
+      adminId,
+      balanceAfter: newBalance
+    });
+
+    await transaction.save();
+
+    // Create and (optionally) send a wallet update notification to the user
+    try {
+      const title = 'Wallet Updated';
+      const msg = type === 'add'
+        ? `Your wallet has been credited with ${amount} coins. Reason: ${reason}.`
+        : `Your wallet has been debited by ${amount} coins. Reason: ${reason}.`;
+
+      const notification = new Notification({
+        userId,
+        title,
+        message: msg,
+        type: 'general',
+        priority: 'normal',
+        isRead: false,
+        sentChannels: [],
+        status: 'pending',
+        createdAt: new Date(),
+      });
+
+      await notification.save();
+
+      if (Array.isArray(user.pushTokens) && user.pushTokens.length > 0) {
+        try {
+          await sendPushNotification(user.pushTokens, {
+            title,
+            body: msg,
+            data: {
+              notificationId: notification._id.toString(),
+              type: 'wallet',
+            },
+          });
+          notification.sentChannels.push('push');
+          notification.status = 'sent';
+          notification.sentAt = new Date();
+          await notification.save();
+        } catch (pushErr) {
+          console.error('[WALLET ADJUST PUSH] Failed:', pushErr);
+          notification.status = 'failed';
+          await notification.save();
+        }
+      }
+
+      // Send PWA web push if user subscribed
+      try {
+        await notifyWalletUpdateWeb(user._id, { amount, type: type === 'add' ? 'credit' : 'debit' });
+      } catch (webPushErr) {
+        // Non-blocking
+        console.warn('[WALLET ADJUST WEB PUSH] Failed:', webPushErr?.message || webPushErr);
+      }
+    } catch (notifyErr) {
+      console.error('[WALLET ADJUST NOTIFY] Error creating/sending notification:', notifyErr);
+      // Continue without failing the wallet adjustment
+    }
+
+    res.json({
+      success: true,
+      message: `Wallet balance ${type === 'add' ? 'added' : 'deducted'} successfully`,
+      walletBalance: newBalance,
+      transaction: {
+        id: transaction._id,
+        amount: transaction.amount,
+        type: transaction.type,
+        description: transaction.description,
+        timestamp: transaction.createdAt
+      }
+    });
+  } catch (error) {
+    console.error('Error adjusting wallet balance:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to adjust wallet balance'
+    });
+  }
+};
+
+// Get user wallet history for admin
+export const getUserWalletHistory = async (req, res) => {
+  const { userId } = req.params;
+  const { page = 1, limit = 20 } = req.query;
+
+  try {
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const [transactions, total] = await Promise.all([
+      Transaction.find({ userId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('adminId', 'name email', 'Admin')
+        .lean(),
+      Transaction.countDocuments({ userId })
+    ]);
+
+    const totalPages = Math.ceil(total / parseInt(limit));
+
+    res.json({
+      transactions,
+      total,
+      page: parseInt(page),
+      totalPages,
+      hasMore: parseInt(page) < totalPages
+    });
+  } catch (error) {
+    console.error('Error fetching wallet history:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch wallet history'
+    });
+  }
+};
+
+// Get wallet statistics for admin dashboard
+export const getWalletStatistics = async (req, res) => {
+  try {
+    // Overall wallet statistics
+    const walletStats = await User.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalWalletBalance: { $sum: '$wallet.balance' },
+          totalCoinsDistributed: { $sum: '$wallet.totalEarned' },
+          totalCoinsRedeemed: { $sum: '$wallet.totalSpent' },
+          averageWalletBalance: { $avg: '$wallet.balance' },
+          usersWithWallet: { 
+            $sum: { 
+              $cond: [{ $gt: ['$wallet.balance', 0] }, 1, 0] 
+            } 
+          }
+        }
+      }
+    ]);
+
+    const stats = walletStats[0] || {
+      totalWalletBalance: 0,
+      totalCoinsDistributed: 0,
+      totalCoinsRedeemed: 0,
+      averageWalletBalance: 0,
+      usersWithWallet: 0
+    };
+
+    // Recent wallet transactions
+    const recentTransactions = await Transaction.find()
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .populate('userId', 'name email')
+      .populate('adminId', 'name email', 'Admin')
+      .lean();
+
+    // Top wallet balances
+    const topWalletUsers = await User.find({
+      'wallet.balance': { $gt: 0 }
+    })
+      .sort({ 'wallet.balance': -1 })
+      .limit(10)
+      .select('name email wallet.balance wallet.totalEarned wallet.totalSpent')
+      .lean();
+
+    res.json({
+      success: true,
+      statistics: stats,
+      recentTransactions,
+      topWalletUsers
+    });
+  } catch (error) {
+    console.error('Error fetching wallet statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch wallet statistics'
+    });
+  }
+};
+
+// Bulk wallet operations
+export const bulkWalletOperation = async (req, res) => {
+  const { 
+    userIds, 
+    operation, // 'add' or 'deduct'
+    amount, 
+    reason, 
+    note,
+    adminId 
+  } = req.body;
+
+  if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'User IDs array is required'
+    });
+  }
+
+  if (!amount || amount <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Amount must be greater than 0'
+    });
+  }
+
+  if (!['add', 'deduct'].includes(operation)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Operation must be either "add" or "deduct"'
+    });
+  }
+
+  try {
+    const users = await User.find({ _id: { $in: userIds } });
+    
+    if (users.length !== userIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Some users not found'
+      });
+    }
+
+    const results = [];
+    const transactions = [];
+
+    for (const user of users) {
+      const adjustmentAmount = operation === 'add' ? amount : -amount;
+      const newBalance = user.wallet.balance + adjustmentAmount;
+
+      if (operation === 'deduct' && newBalance < 0) {
+        results.push({
+          userId: user._id,
+          name: user.name,
+          success: false,
+          error: 'Insufficient wallet balance'
+        });
+        continue;
+      }
+
+      // Update wallet
+      user.wallet.balance = newBalance;
+      if (operation === 'add') {
+        user.wallet.totalEarned += amount;
+      } else {
+        user.wallet.totalSpent += amount;
+      }
+
+      await user.save();
+
+      // Prepare transaction record
+      const transaction = new Transaction({
+        userId: user._id,
+        type: 'MANUAL_ADJUSTMENT',
+        amount,
+        description: `Bulk admin adjustment: ${reason}`,
+        note,
+        source: 'bulk_admin_adjustment',
+        status: 'COMPLETED',
+        adminId,
+        balanceAfter: newBalance
+      });
+
+      transactions.push(transaction);
+
+      results.push({
+        userId: user._id,
+        name: user.name,
+        success: true,
+        previousBalance: user.wallet.balance - adjustmentAmount,
+        newBalance: newBalance
+      });
+    }
+
+    // Save all transactions
+    await Transaction.insertMany(transactions);
+
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.filter(r => !r.success).length;
+
+    res.json({
+      success: true,
+      message: `Bulk operation completed. ${successCount} successful, ${failureCount} failed.`,
+      results,
+      summary: {
+        total: userIds.length,
+        successful: successCount,
+        failed: failureCount,
+        totalAmountProcessed: successCount * amount
+      }
+    });
+  } catch (error) {
+    console.error('Error performing bulk wallet operation:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to perform bulk wallet operation'
+    });
   }
 };

@@ -9,6 +9,7 @@ import Order from '../models/Order.js';
 import Product from '../models/Product.js';
 import User from '../models/User.js';
 import * as notifications from '../notifications.js';
+import { notifyOrderPlaced as notifyOrderPlacedWeb, notifyOrderStatusUpdate as notifyOrderStatusWeb } from '../services/webPushService.js';
 import { 
   sendOrderPlacedEmail,
   sendOrderOtpEmail,
@@ -976,6 +977,13 @@ export const createOrder = async (req, res) => {
           itemCount: items.length
         });
 
+        // PWA web push for order placed
+        try {
+          await notifyOrderPlacedWeb(userId, { orderId: order._id.toString(), total: totalAmount });
+        } catch (e) {
+          console.warn('[WEB PUSH] order placed failed:', e?.message || e);
+        }
+
         // Send push notification to all admins about new order
         await notifications.notifyAdminsNewOrder(order._id, {
           name: user.name,
@@ -1278,6 +1286,13 @@ export const updateOrderStatus = async (req, res) => {
 
       // Legacy push notification (keep for compatibility)
       await notifications.notifyOrderStatus(user, order._id, status);
+
+      // PWA web push for order status updates
+      try {
+        await notifyOrderStatusWeb(user._id, { orderId: order._id.toString(), status });
+      } catch (e) {
+        console.warn('[WEB PUSH] order status failed:', e?.message || e);
+      }
 
       // Special handling for UPI payment confirmation
       if (order.paymentMethod === 'UPI' && status === 'Paid') {

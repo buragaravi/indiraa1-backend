@@ -48,6 +48,10 @@ import returnAnalyticsRoutes from './routes/returnAnalytics.js';
 import promotionalNotificationService from './services/promotionalNotificationService.js';
 import promotionalNotificationRoutes from './routes/promotionalNotifications.js';
 import { initializeBatchScheduler } from './utils/batchScheduler.js';
+import adminUsersRoutes from './routes/adminUsersRoutes.js';
+import userNotificationRoutes from './routes/userNotifications.js';
+import notificationService from './services/notificationService.js';
+import Notification from './models/Notification.js';
 
 const app = express();
 
@@ -62,9 +66,11 @@ app.use('/api/combo-packs', comboPackRoutes);
 app.use('/api/banners', bannerRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/user/notifications', userNotificationRoutes);
 app.use('/api/delivery-auth', deliveryAuthRoutes);
 app.use('/api/delivery', deliveryRoutes);
 app.use('/api/admin/delivery', adminDeliveryRoutes);
+app.use('/api/admin/users', adminUsersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/sub-admin', subAdminRoutes);
 app.use('/api/batches', batchRoutes);
@@ -658,6 +664,40 @@ app.get('/', (req, res) => {
   `);
 });
 
+// Scheduled Notifications Dispatcher
+async function processScheduledNotifications(batchSize = 50) {
+  try {
+    let processed = 0;
+    while (processed < batchSize) {
+      // Atomically pick one due scheduled notification and mark as pending
+      const due = await Notification.findOneAndUpdate(
+        {
+          status: 'scheduled',
+          scheduledFor: { $lte: new Date() }
+        },
+        { $set: { status: 'pending' } },
+        { sort: { scheduledFor: 1 }, new: true }
+      );
+
+      if (!due) break; // no more due items
+
+      try {
+        await notificationService.sendNotification(due._id);
+      } catch (err) {
+        // mark as failed on error
+        await Notification.findByIdAndUpdate(due._id, { $set: { status: 'failed' } });
+        console.error('[SCHEDULED NOTIFY] Failed to send:', due._id?.toString(), err?.message || err);
+      }
+      processed += 1;
+    }
+    if (processed > 0) {
+      console.log(`[SCHEDULED NOTIFY] Dispatched ${processed} notification(s)`);
+    }
+  } catch (e) {
+    console.error('[SCHEDULED NOTIFY] Worker error:', e);
+  }
+}
+
 const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGO_URI;
 
@@ -678,6 +718,17 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
         console.log('[INFO] Promotional notification scheduler started');
       } catch (error) {
         console.warn('[WARN] Promotional notification scheduler failed to start:', error.message);
+      }
+
+      // Start scheduled notifications dispatcher (runs every minute)
+      try {
+        processScheduledNotifications().catch(() => {});
+        cron.schedule('*/1 * * * *', async () => {
+          await processScheduledNotifications();
+        });
+        console.log('[INFO] Scheduled notifications dispatcher started (every minute)');
+      } catch (e) {
+        console.warn('[WARN] Failed to start scheduled notifications dispatcher:', e?.message || e);
       }
     });
   })

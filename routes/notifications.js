@@ -12,6 +12,15 @@ import {
 
 const router = express.Router()
 
+// Public endpoint to fetch VAPID public key (for PWA subscription)
+router.get('/public-key', (_req, res) => {
+  const key = process.env.VAPID_PUBLIC_KEY || ''
+  if (!key) {
+    return res.status(500).json({ success: false, message: 'VAPID public key not configured' })
+  }
+  res.json({ success: true, publicKey: key })
+})
+
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization']

@@ -1,6 +1,8 @@
 // Web Push Notification Service for Backend
 import webpush from 'web-push'
 import User from '../models/User.js'
+import { configDotenv } from 'dotenv'
+configDotenv()
 
 // Configure web-push with VAPID keys from environment
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY
@@ -83,7 +85,14 @@ export async function sendWebPushNotification(userId, payload) {
       timestamp: Date.now()
     })
 
-    const result = await webpush.sendNotification(subscription, notificationPayload)
+    const options = {
+      TTL: payload.ttl ?? 3600,
+      headers: {
+        Urgency: payload.urgency || 'normal',
+        Topic: payload.tag || 'default'
+      }
+    }
+    const result = await webpush.sendNotification(subscription, notificationPayload, options)
     console.log(`✅ Web push notification sent to user ${userId}`)
     return result
   } catch (error) {

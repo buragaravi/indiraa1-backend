@@ -2193,6 +2193,10 @@ pm2 restart ecommerce-backend
 #### 4. Subscribe to Push Notifications
 - **Endpoint**: `POST /api/notifications/subscribe`
 - **Purpose**: Subscribe user device for push notifications
+
+Web PWA support:
+- Get VAPID public key: `GET /api/notifications/public-key`
+- Client must register a service worker, call PushManager.subscribe with that key, then POST the subscription above with user auth.
 - **Authentication**: User required
 - **Request Body**:
 ```json
