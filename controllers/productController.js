@@ -1361,7 +1361,24 @@ export const cancelOrder = async (req, res) => {
     
     order.status = 'Cancelled';
     await order.save();
-    res.json({ order });
+
+    // In-app notification
+    try {
+      const notifService = (await import('../services/notificationService.js')).default;
+      await notifService.sendOrderNotification(order._id.toString(), 'cancelled', order.userId.toString());
+    } catch (_) {}
+
+    // Expo push (mobile)
+    try {
+      await notifications.notifyOrderStatus(order.userId.toString(), order._id.toString(), 'cancelled');
+    } catch (_) {}
+
+    // Web push (PWA)
+    try {
+      await notifyOrderStatusWeb(order.userId.toString(), { orderId: order._id.toString(), status: 'cancelled' });
+    } catch (_) {}
+
+    res.json({ order, message: 'Order cancelled successfully' });
   } catch (error) {
     console.error('[CANCEL ORDER] Error:', error);
     res.status(500).json({ message: 'Failed to cancel order.' });

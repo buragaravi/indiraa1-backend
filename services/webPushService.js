@@ -42,7 +42,8 @@ export async function storeUserSubscription(userId, subscription) {
       keys: subscription.keys,
       expirationTime: subscription.expirationTime,
       createdAt: new Date(),
-      userAgent: subscription.userAgent || 'Unknown'
+  userAgent: subscription.userAgent || 'Unknown',
+  vapidPublicKey: subscription.vapidPublicKey || null
     }
 
     await user.save()
@@ -99,7 +100,7 @@ export async function sendWebPushNotification(userId, payload) {
     console.error(`❌ Failed to send web push notification to user ${userId}:`, error)
     
     // Remove invalid subscription
-    if (error.statusCode === 410 || error.statusCode === 404) {
+    if ([410, 404, 401, 403, 400].includes(error.statusCode)) {
       await removeUserSubscription(userId)
       console.log(`🗑️ Removed invalid subscription for user ${userId}`)
     }
@@ -332,6 +333,41 @@ export async function notifyAdminNewOrder(adminUserIds, orderData) {
   }
   
   return await sendBulkWebPushNotifications(adminUserIds, payload)
+}
+
+// 7. Return-related notifications (web)
+export async function notifyReturnStatusWeb(userId, returnData) {
+  const statusMessages = {
+    submitted: `Your return #${returnData.returnId} has been submitted for review.`,
+    requested: `Your return #${returnData.returnId} has been submitted for review.`,
+    approved: `Your return #${returnData.returnId} has been approved.`,
+    rejected: `Your return #${returnData.returnId} was rejected.`,
+    pickup_scheduled: `Pickup scheduled for return #${returnData.returnId}.`,
+    picked_up: `Return #${returnData.returnId} has been picked up.`,
+    processing: `Return #${returnData.returnId} is being processed.`,
+    refund_initiated: `Refund initiated for return #${returnData.returnId}.`,
+    completed: `Return #${returnData.returnId} has been completed.`,
+    cancelled: `Your return #${returnData.returnId} has been cancelled.`
+  }
+
+  const payload = {
+    title: 'Return Update',
+    body: statusMessages[returnData.status] || `Return #${returnData.returnId} status: ${returnData.status}`,
+    tag: `return-${returnData.returnId}`,
+    data: {
+      type: 'return_status',
+      returnId: returnData.returnId,
+      status: returnData.status,
+      orderId: returnData.orderId,
+      url: `/returns/${returnData.returnId}`,
+      ...returnData.extra
+    },
+    actions: [
+      { action: 'view', title: 'View Return', icon: '/view-icon.png' }
+    ]
+  }
+
+  return await sendWebPushNotification(userId, payload)
 }
 
 // Utility function to get all users with active subscriptions

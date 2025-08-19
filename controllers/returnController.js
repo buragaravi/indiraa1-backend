@@ -11,6 +11,9 @@ import {
   sendReturnRequestConfirmation, 
   sendReturnDecisionNotification 
 } from '../services/communicationService.js';
+import { notifyReturnStatus as notifyReturnStatusExpo, notifyAdminsReturnRequest } from '../notifications.js';
+import { notifyReturnStatusWeb } from '../services/webPushService.js';
+import notificationService from '../services/notificationService.js';
 
 // AWS S3 Configuration
 const s3 = new AWS.S3({
@@ -238,8 +241,36 @@ export const createReturnRequest = async (req, res) => {
     });
     await order.save();
 
-    // Send notifications
+    // In-app notification for user
+    await notificationService.createNotification({
+      title: 'Return Requested',
+      message: `Your return for order #${order._id.toString()} has been submitted for review.`,
+      type: 'return',
+      userId: order.userId._id,
+      category: 'returns',
+      relatedOrderId: order._id,
+      actionUrl: `/returns/${returnRequest._id.toString()}`,
+      channels: ['in_app']
+    });
+
+    // Multi-channel notifications
     await sendReturnRequestConfirmation(order.userId, returnRequest);
+    // Expo (mobile)
+    try {
+      await notifyReturnStatusExpo(order.userId._id || order.userId, returnRequest._id.toString(), 'requested', { orderId: order._id.toString() });
+    } catch (_) {}
+    // Web (PWA)
+    try {
+      await notifyReturnStatusWeb(order.userId._id || order.userId, { 
+        returnId: returnRequest._id.toString(),
+        orderId: order._id.toString(),
+        status: 'requested'
+      });
+    } catch (_) {}
+    // Admins (Expo)
+    try {
+      await notifyAdminsReturnRequest(returnRequest._id.toString(), order._id.toString(), { name: order.userId.name || order.userId.email }, returnReason);
+    } catch (_) {}
 
     res.status(201).json({
       success: true,
@@ -424,6 +455,31 @@ export const cancelReturnRequest = async (req, res) => {
       }
       await order.save();
     }
+
+    // In-app notification for cancellation
+    await notificationService.createNotification({
+      title: 'Return Cancelled',
+      message: `Your return request #${returnRequest._id.toString()} has been cancelled.`,
+      type: 'return',
+      userId: returnRequest.customerId,
+      category: 'returns',
+      relatedOrderId: returnRequest.orderId,
+      actionUrl: `/orders/${returnRequest.orderId.toString()}`,
+      channels: ['in_app']
+    });
+
+    // Expo push (user)
+    try {
+      await notifyReturnStatusExpo(returnRequest.customerId.toString(), returnRequest._id.toString(), 'cancelled', { orderId: returnRequest.orderId.toString() });
+    } catch (_) {}
+    // Web push (user)
+    try {
+      await notifyReturnStatusWeb(returnRequest.customerId.toString(), {
+        returnId: returnRequest._id.toString(),
+        orderId: returnRequest.orderId.toString(),
+        status: 'cancelled'
+      });
+    } catch (_) {}
 
     res.json({
       success: true,
